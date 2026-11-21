@@ -31,12 +31,28 @@ every rebuild. Signing with a real developer identity (full Xcode and a free App
 | Loop | How often | What it does |
 |---|---|---|
 | Fast | every 5 s | Logs the front app and window title. Counts time on "scrolling" apps and fires the nudge. No model. |
-| Capture | every 10 s | Saves a 1280-pixel screenshot of the display under the pointer, skipping unchanged frames and excluded apps. |
-| Read | every 10 min | Claude Haiku 5.5 reads up to 12 key frames and reports commitments, completions and content seen. |
+| Capture | every 10 s | Captures the display under the pointer, skipping unchanged frames and excluded apps, and stores a 1280-pixel copy. About every 30 s, and whenever a new window comes to the front, the text is read off the full-size capture on this Mac. |
+| Read | every 10 min | Claude Haiku 5.5 is sent the text of up to 12 key screens, each cut down to lines not already sent, and reports commitments, completions and content seen. A line counts as already sent only within the same window. |
 | Index | after each read | Projects, people, documents and topics Haiku named are matched against the index by name. Claude Sonnet 5.5 is called only for names it has not seen before. |
 | Merge | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project, and writes each card's "why now" line. |
-
 | Suggest | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 turns what you have been watching and reading into search queries. arXiv and Hacker News are searched directly, and Sonnet picks up to 8 results worth a card. |
+
+Capture is text-first. Text recognition runs on-device (Apple's Vision framework, with language
+detection on), so Claude is sent words, not pictures, for most screens. The three screens with the
+least text in a reading, if under 800 characters, also get their screenshot sent. On 12 real
+screenshots this came to about half the tokens of sending every image.
+
+What is kept out and cleaned up:
+
+- Windows matching a "never capture" word, and Lifescroll's own windows, are removed from the
+  picture by the system before it is taken, wherever they sit on screen. If such a window is in
+  front, the capture is skipped altogether.
+- Things shaped like API keys, tokens and card numbers are masked before the text is stored or
+  sent. This is a safety net for obvious shapes, not a guarantee.
+- Screen text is erased as soon as its reading is done, and erased rows are overwritten in the
+  database file. Screenshots are deleted after three days.
+- Screen text is sent inside `<screen_text>` tags and Haiku is told it is content to report on,
+  never instructions.
 
 Suggestions are the enjoyable half of the feed: a paper, an essay, a talk. Opening one or pressing
 "Not for me" removes it and is fed back into the next round of choosing. Search queries are general
@@ -68,6 +84,7 @@ Modes set both the nudge and the blend of the feed:
 | File | Contents |
 |---|---|
 | `Sources/Lifescroll/Capture.swift` | Front-window sampling and screenshots |
+| `Sources/Lifescroll/ScreenText.swift` | On-device text recognition, masking of secrets, and trimming repeated lines |
 | `Sources/Lifescroll/Analyzer.swift` | Prompts, JSON schemas, the read and merge steps |
 | `Sources/Lifescroll/Recommendations.swift` | arXiv and Hacker News search, and the plan and pick steps for suggestions |
 | `Sources/Lifescroll/ClaudeClient.swift` | Raw HTTP to the Messages API, Keychain storage |
@@ -103,10 +120,16 @@ To run one real search against arXiv and Hacker News, with no Claude calls:
 
 arXiv answers 429 when requests come too close together, so leave a while between runs.
 
+To time text recognition on your newest stored screenshots (it prints counts, never the text):
+
+```bash
+.build/debug/Lifescroll --ocr-test 12
+```
+
 ## Not built yet
 
 - Searching YouTube directly. Videos currently appear only when Hacker News links to one.
 - Tone matching for card text.
 - A learned ranker to replace the hand-written score.
 - Using the index for ranking (a task inheriting urgency from its project) and for reopening a whole project.
-- Reading window text through Accessibility instead of pixels.
+- A local, zero-cost mode. Now that reading is text-first, a small local text model could replace Haiku.

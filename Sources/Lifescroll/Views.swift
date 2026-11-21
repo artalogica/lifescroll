@@ -760,7 +760,7 @@ struct SettingsView: View {
       Section("Privacy") {
         TextField("Never capture", text: $model.excludedKeywords, axis: .vertical)
           .lineLimit(2...4)
-        Text("Screenshots are skipped while a matching window is in front. Raw screenshots are deleted after three days; everything is stored on this Mac.")
+        Text("Matching windows are cut out of every capture, and nothing is captured while one is in front. Screen text is read on this Mac, and things that look like keys or card numbers are masked. Claude is sent that text, plus a screenshot where a screen had little text. The text is erased once it has been read; screenshots are deleted after three days.")
           .font(.caption)
           .foregroundStyle(.secondary)
         HStack {

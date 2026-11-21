@@ -98,6 +98,8 @@ struct FrameRecord: Equatable {
   let path: String
   let app: String
   let title: String
+  /// Text read off this screenshot on-device. Nil means it was never read; empty means nothing was found.
+  var text: String? = nil
 }
 
 struct ActivitySpan {

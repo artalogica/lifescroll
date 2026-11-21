@@ -60,11 +60,22 @@ enum ActivityMonitor {
 // MARK: - Slow loop: screenshots
 
 struct CapturedFrame {
-  let jpeg: Data
+  /// The capture at full resolution, for reading its text. Never written to disk.
+  let image: CGImage
   /// 16×16 grayscale thumbnail used to skip frames where nothing changed.
   let signature: [UInt8]
-  let width: Int
-  let height: Int
+}
+
+enum CaptureExclusion {
+  /// Whether a window must be left out of the picture itself: one of Lifescroll's own, or one whose
+  /// app or title matches a "never capture" word. This holds wherever the window sits on screen,
+  /// not only when it is in front.
+  static func excludes(
+    app: String, bundleID: String, title: String, keywords: [String], ownBundleID: String?
+  ) -> Bool {
+    if let ownBundleID, !ownBundleID.isEmpty, bundleID == ownBundleID { return true }
+    return Keywords.matches(ActivitySample(app: app, bundleID: bundleID, title: title, url: ""), keywords)
+  }
 }
 
 enum CaptureError: LocalizedError {
@@ -99,8 +110,19 @@ enum ScreenCapturer {
     return number?.uint32Value ?? CGMainDisplayID()
   }
 
-  /// One downscaled JPEG of a display. 1280 on the long edge keeps each frame near 1,300 input tokens.
-  static func capture(displayID: CGDirectDisplayID, maxLongEdge: Int = 1280) async throws -> CapturedFrame {
+  /// Longest edge captured when the text is going to be read. Small text needs the real pixels.
+  static let textLongEdge = 3200
+
+  /// Captures a display at its real pixel size, so small text can be read. Every capture takes the
+  /// same path, so the change signature of one frame is comparable with the next. Nothing is scaled
+  /// or encoded here: that only happens, in `encode`, once the caller knows the screen changed.
+  ///
+  /// Windows matching `keywords`, and Lifescroll's own windows, are removed from the picture by the
+  /// system before it is taken, so their contents are never read or stored.
+  static func capture(
+    displayID: CGDirectDisplayID, excluding keywords: [String] = [],
+    ownBundleID: String? = Bundle.main.bundleIdentifier
+  ) async throws -> CapturedFrame {
     let content = try await SCShareableContent.excludingDesktopWindows(
       false, onScreenWindowsOnly: true)
     guard
@@ -108,23 +130,50 @@ enum ScreenCapturer {
         ?? content.displays.first
     else { throw CaptureError.noDisplay }
 
-    let filter = SCContentFilter(display: display, excludingWindows: [])
+    let hidden = content.windows.filter { window in
+      CaptureExclusion.excludes(
+        app: window.owningApplication?.applicationName ?? "",
+        bundleID: window.owningApplication?.bundleIdentifier ?? "", title: window.title ?? "",
+        keywords: keywords, ownBundleID: ownBundleID)
+    }
+    let filter = SCContentFilter(display: display, excludingWindows: hidden)
     let pointLongEdge = Double(max(display.width, display.height))
     let pixelLongEdge = pointLongEdge * Double(filter.pointPixelScale)
-    let scale = min(Double(maxLongEdge), pixelLongEdge) / pointLongEdge
+    let scale = min(Double(textLongEdge), pixelLongEdge) / pointLongEdge
 
     let configuration = SCStreamConfiguration()
     configuration.width = max(Int(Double(display.width) * scale), 1)
     configuration.height = max(Int(Double(display.height) * scale), 1)
     configuration.showsCursor = false
 
-    let image = try await SCScreenshotManager.captureImage(
+    let captured = try await SCScreenshotManager.captureImage(
       contentFilter: filter, configuration: configuration)
-    let bitmap = NSBitmapImageRep(cgImage: image)
+    return CapturedFrame(image: captured, signature: signature(of: captured))
+  }
+
+  /// The copy that is kept on disk: 1280 on the long edge, about 1,300 input tokens if it is ever
+  /// sent as an image. Called only for frames that are going to be saved.
+  static func encode(_ image: CGImage, maxLongEdge: Int = 1280) throws -> Data {
+    let bitmap = NSBitmapImageRep(cgImage: downscale(image, longEdge: maxLongEdge))
     guard let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.6])
     else { throw CaptureError.encodingFailed }
-    return CapturedFrame(
-      jpeg: jpeg, signature: signature(of: image), width: image.width, height: image.height)
+    return jpeg
+  }
+
+  static func downscale(_ image: CGImage, longEdge: Int) -> CGImage {
+    let scale = Double(longEdge) / Double(max(image.width, image.height))
+    guard scale < 1 else { return image }
+    let width = max(Int(Double(image.width) * scale), 1)
+    let height = max(Int(Double(image.height) * scale), 1)
+    guard
+      let context = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+        space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    else { return image }
+    context.interpolationQuality = .high
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage() ?? image
   }
 
   static func signature(of image: CGImage) -> [UInt8] {

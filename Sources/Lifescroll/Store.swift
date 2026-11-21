@@ -56,6 +56,7 @@ final class Store: @unchecked Sendable {
   func migrate() throws {
     try addColumnIfMissing("tasks", "project_id", "TEXT DEFAULT ''")
     try addColumnIfMissing("observations", "entities_done", "INTEGER DEFAULT 0")
+    try addColumnIfMissing("frames", "text", "TEXT")
   }
 
   private func addColumnIfMissing(_ table: String, _ column: String, _ definition: String) throws {
@@ -201,7 +202,7 @@ final class Store: @unchecked Sendable {
   // MARK: - Frames (the slow loop)
 
   @discardableResult
-  func saveFrame(jpeg: Data, at date: Date, app: String, title: String) throws -> String {
+  func saveFrame(jpeg: Data, at date: Date, app: String, title: String, text: String? = nil) throws -> String {
     let day = DateFormatter()
     day.dateFormat = "yyyy-MM-dd"
     let time = DateFormatter()
@@ -210,16 +211,15 @@ final class Store: @unchecked Sendable {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let file = directory.appendingPathComponent("\(time.string(from: date)).jpg")
     try jpeg.write(to: file, options: .atomic)
-    try db.execute(
-      "INSERT INTO frames (ts, path, app, title) VALUES (?, ?, ?, ?)",
-      [.date(date), .text(file.path), .text(app), .text(title)])
+    addFrameRecord(ts: date, path: file.path, app: app, title: title, text: text)
     return file.path
   }
 
-  func addFrameRecord(ts: Date, path: String, app: String, title: String) {
+  /// The screen text lives on the frame's row, so it is deleted along with the screenshot.
+  func addFrameRecord(ts: Date, path: String, app: String, title: String, text: String? = nil) {
     _ = try? db.execute(
-      "INSERT INTO frames (ts, path, app, title) VALUES (?, ?, ?, ?)",
-      [.date(ts), .text(path), .text(app), .text(title)])
+      "INSERT INTO frames (ts, path, app, title, text) VALUES (?, ?, ?, ?, ?)",
+      [.date(ts), .text(path), .text(app), .text(title), text.map { .text($0) } ?? .null])
   }
 
   func pendingFrames(limit: Int = 600) -> [FrameRecord] {
@@ -228,7 +228,7 @@ final class Store: @unchecked Sendable {
     return (rows ?? []).map {
       FrameRecord(
         id: $0.int64("id"), ts: $0.date("ts") ?? Date(), path: $0.string("path"),
-        app: $0.string("app"), title: $0.string("title"))
+        app: $0.string("app"), title: $0.string("title"), text: $0.optionalString("text"))
     }
   }
 
@@ -236,10 +236,21 @@ final class Store: @unchecked Sendable {
     (try? db.query("SELECT COUNT(*) AS n FROM frames WHERE analyzed = 0"))?.first?.int("n") ?? 0
   }
 
+  /// Marks screenshots as read and drops their screen text, which has no use once the reading is done.
   func markAnalyzed(_ ids: [Int64]) {
     for id in ids {
-      _ = try? db.execute("UPDATE frames SET analyzed = 1 WHERE id = ?", [.int(id)])
+      _ = try? db.execute("UPDATE frames SET analyzed = 1, text = NULL WHERE id = ?", [.int(id)])
     }
+  }
+
+  func framesHoldingText() -> Int {
+    (try? db.query("SELECT COUNT(*) AS n FROM frames WHERE text IS NOT NULL"))?.first?.int("n") ?? 0
+  }
+
+  /// Folds the write-ahead log back into the main file and empties it, so removed text does not
+  /// linger there. Erased rows are already overwritten in the main file (see `Database.init`).
+  func compact() {
+    _ = try? db.query("PRAGMA wal_checkpoint(TRUNCATE)")
   }
 
   /// Removes screenshots older than the cutoff, files and rows. Returns how many were removed.

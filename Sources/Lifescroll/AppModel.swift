@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
 
   private var tracker = NudgeTracker()
   private var stillness = StillnessTracker()
+  private var textSchedule = TextSchedule()
   private var timers: [Timer] = []
   private var lastSignature: [UInt8]?
   private var lastCompare = Date.distantPast
@@ -111,6 +112,7 @@ final class AppModel: ObservableObject {
 
   private func maintenance() {
     store.deleteFrames(before: Date().addingTimeInterval(-Self.frameRetention))
+    store.compact()
     pendingFrames = store.pendingFrameCount()
   }
 
@@ -195,29 +197,56 @@ final class AppModel: ObservableObject {
 
   // MARK: - Slow loop
 
+  /// Whether the window in front right now matches a "never capture" word. This asks the system
+  /// afresh each time; the sample from the 5-second activity loop can be several seconds stale.
+  private func frontWindowIsPrivate(_ excluded: [String]) -> Bool {
+    guard let front = ActivityMonitor.currentSample() else { return false }
+    return Keywords.matches(front, excluded)
+  }
+
   private func captureTick() {
     guard !capturing else { return }
-    guard !paused, screenPermission, !currentHidden, !ScreenCapturer.isScreenLocked else {
+    let excluded = Keywords.parse(excludedKeywords)
+    guard !paused, screenPermission, !ScreenCapturer.isScreenLocked, !currentHidden,
+      !frontWindowIsPrivate(excluded)
+    else {
       stillness.couldNotCheck()
       return
     }
     capturing = true
     let displayID = ScreenCapturer.activeDisplayID()
-    let sample = current
+    // Label the frame with the window in front now. When that is Lifescroll's own popover, which is
+    // left out of the picture, keep the last window the activity loop saw.
+    let front = ActivityMonitor.currentSample()
+    let sample = (front.flatMap { $0.bundleID == Bundle.main.bundleIdentifier ? nil : $0 }) ?? current
+    // Text is read from about one screenshot every 30 seconds, and straight away for a new window.
+    let window = "\(sample.app)|\(sample.title)"
+    let readText = textSchedule.isDue(window: window, now: Date())
     Task {
       defer { capturing = false }
       do {
-        let frame = try await ScreenCapturer.capture(displayID: displayID)
-        // A repeat of the last saved screenshot is never written to disk.
+        let frame = try await ScreenCapturer.capture(displayID: displayID, excluding: excluded)
+        // A repeat of the last saved screenshot costs nothing more: no scaling, encoding or reading.
         if let last = lastSignature, FrameMath.difference(last, frame.signature) < 1.5 {
           stillness.sawNoChange(now: Date())
           return
         }
         stillness.sawChange()
-        // The front window may have changed to something private while the capture was in flight.
-        guard !currentHidden else { return }
+        // Something private may have come to the front while the capture was in flight.
+        guard !frontWindowIsPrivate(excluded) else { return }
         lastSignature = frame.signature
-        try store.saveFrame(jpeg: frame.jpeg, at: Date(), app: sample.app, title: sample.title)
+        let capturedAt = Date()
+        var text: String?
+        if readText {
+          // Recognised on this Mac, off the main thread, and masked before it is stored.
+          text = Redactor.mask(await ScreenText.recognizeInBackground(frame.image))
+          textSchedule.didRead(window: window, now: capturedAt)
+          // Recognition takes a moment; check once more before anything is written.
+          guard !frontWindowIsPrivate(excluded) else { return }
+        }
+        try store.saveFrame(
+          jpeg: try ScreenCapturer.encode(frame.image), at: capturedAt, app: sample.app,
+          title: sample.title, text: text)
         pendingFrames = store.pendingFrameCount()
       } catch {
         stillness.couldNotCheck()

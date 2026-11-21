@@ -24,6 +24,12 @@ struct DBRow {
     return ""
   }
 
+  /// Nil for a NULL column, where `string` would give an empty string.
+  func optionalString(_ key: String) -> String? {
+    if case .text(let value)? = values[key] { return value }
+    return nil
+  }
+
   func double(_ key: String) -> Double {
     switch values[key] {
     case .double(let value)?: return value
@@ -68,6 +74,9 @@ final class Database: @unchecked Sendable {
     }
     sqlite3_busy_timeout(handle, 2000)
     _ = try? query("PRAGMA journal_mode=WAL")
+    // Overwrite deleted content with zeros. Screen text passes through this file, and without this
+    // "deleted" rows stay readable in the file's free space.
+    _ = try? query("PRAGMA secure_delete=ON")
   }
 
   deinit { sqlite3_close(handle) }

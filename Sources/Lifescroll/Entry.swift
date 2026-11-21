@@ -28,6 +28,55 @@ enum Entry {
         exit(1)
       }
     }
+    // `--ocr-test [count]` reads the text off the newest stored screenshots and reports timing and size.
+    // It prints numbers only, never the text itself, and makes no network calls.
+    if let flag = CommandLine.arguments.firstIndex(of: "--ocr-test") {
+      let count = CommandLine.arguments.indices.contains(flag + 1) ? Int(CommandLine.arguments[flag + 1]) ?? 12 : 12
+      let directory = Store.applicationSupport().appendingPathComponent("frames")
+      let files = (FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)?
+        .compactMap { $0 as? URL }.filter { $0.pathExtension == "jpg" } ?? [])
+        .sorted { $0.path < $1.path }.suffix(count)
+      guard !files.isEmpty else {
+        print("no stored screenshots found")
+        exit(1)
+      }
+      // Window labels come straight from the database, read-only, so repeats are judged per window
+      // the same way a real reading does.
+      var labels: [String: String] = [:]
+      let databasePath = Store.applicationSupport().appendingPathComponent("lifescroll.sqlite").path
+      for row in (try? Database(path: databasePath).query("SELECT path, app, title FROM frames")) ?? [] {
+        labels[row.string("path")] = "\(row.string("app"))|\(row.string("title"))"
+      }
+      var texts: [String] = []
+      var windows: [String] = []
+      var imageTokens = 0
+      var seconds = 0.0
+      for file in files {
+        guard let data = try? Data(contentsOf: file), let image = NSBitmapImageRep(data: data)?.cgImage
+        else { continue }
+        let started = Date()
+        let text = Redactor.mask(ScreenText.recognize(image))
+        seconds += Date().timeIntervalSince(started)
+        texts.append(text)
+        windows.append(labels[file.path] ?? "")
+        // Claude counts an image at roughly one token per 28×28 pixel patch.
+        imageTokens += image.width * image.height / 784
+      }
+      let raw = texts.reduce(0) { $0 + $1.count }
+      let condensed = TextCondenser.condense(
+        zip(windows, texts).map { (window: $0.0, text: $0.1) }
+      ).reduce(0) { $0 + $1.count }
+      let pictured = Analyzer.screensToPicture(texts.map(\.count)).count
+      print("screenshots read: \(texts.count), \(files.first.map { "\(NSBitmapImageRep(data: (try? Data(contentsOf: $0)) ?? Data())?.pixelsWide ?? 0)" } ?? "?") px wide")
+      print(String(format: "recognition time: %.2f s each, %.1f s total", seconds / Double(max(texts.count, 1)), seconds))
+      print("text found: \(raw) characters, \(condensed) after dropping repeated lines")
+      let perImage = imageTokens / max(texts.count, 1)
+      print("distinct windows: \(Set(windows).count)")
+      print("screens with little text (screenshot sent as well): \(pictured)")
+      print("rough tokens as images: \(imageTokens)")
+      print("rough tokens as text: \(condensed * 10 / 32 + pictured * perImage) (about 3.2 characters per token, plus \(pictured) screenshots)")
+      exit(0)
+    }
     // `--parse-arxiv <file>` reads a saved arXiv reply, to check the parser against the real format.
     if let flag = CommandLine.arguments.firstIndex(of: "--parse-arxiv"),
       CommandLine.arguments.indices.contains(flag + 1)
