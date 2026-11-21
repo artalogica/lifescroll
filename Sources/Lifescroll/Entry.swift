@@ -28,6 +28,46 @@ enum Entry {
         exit(1)
       }
     }
+    // `--parse-arxiv <file>` reads a saved arXiv reply, to check the parser against the real format.
+    if let flag = CommandLine.arguments.firstIndex(of: "--parse-arxiv"),
+      CommandLine.arguments.indices.contains(flag + 1)
+    {
+      let data = FileManager.default.contents(atPath: CommandLine.arguments[flag + 1]) ?? Data()
+      let papers = CandidateSources.parseArxiv(data)
+      print("papers parsed: \(papers.count)")
+      for paper in papers {
+        print("  \(paper.title)  <\(paper.url)>  published: \(paper.published != nil)  summary: \(paper.snippet.count) chars")
+      }
+      exit(papers.isEmpty ? 1 : 0)
+    }
+    // `--fetch-test "<words>"` runs one real search against arXiv and Hacker News and prints what came back.
+    // It makes no Claude calls and touches no stored data.
+    if let flag = CommandLine.arguments.firstIndex(of: "--fetch-test"),
+      CommandLine.arguments.indices.contains(flag + 1)
+    {
+      let query = CommandLine.arguments[flag + 1]
+      Task.detached {
+        let recommender = Recommender(store: try! Store.inMemory())
+        let plan = SearchPlan(arxivQueries: [query], hnQueries: [query], interestsSummary: "")
+        let gathered = await recommender.gather(plan: plan, now: Date())
+        for problem in gathered.problems { print("search failed: \(problem)") }
+        let cleaned = CandidateSources.clean(
+          gathered.found, suggested: [], seenURLs: [], seenTitles: [])
+        for source in ["arXiv", "Hacker News"] {
+          let related = cleaned.filter { $0.source == source && $0.bucket == "related" }
+          print("\(source), related to \"\(query)\": \(related.count)")
+          for candidate in related.prefix(2) { print("  \(candidate.title)  <\(candidate.url)>") }
+        }
+        let explore = cleaned.filter { $0.bucket == "explore" }
+        print("Hacker News front page: \(explore.count)")
+        for candidate in explore.prefix(2) { print("  \(candidate.title)  <\(candidate.url)>") }
+        let succeeded =
+          cleaned.contains { $0.source == "arXiv" } && cleaned.contains { $0.source == "Hacker News" }
+        exit(succeeded ? 0 : 1)
+      }
+      // Keeps the process alive while the searches run; the task above ends it.
+      dispatchMain()
+    }
     LifescrollApp.main()
   }
 }

@@ -78,11 +78,16 @@ struct PopoverView: View {
       if !model.setupIssues.isEmpty { SetupBanner() }
       if let pair = model.comparePair {
         CompareCard(pair: pair)
-      } else if let card = model.currentCard {
+      } else if let item = model.currentItem {
         // A new id makes SwiftUI treat each card as a new view, so it slides in the scroll direction.
-        TaskCard(task: card)
-          .id(card.id)
-          .transition(.push(from: model.scrollStep >= 0 ? .bottom : .top))
+        Group {
+          switch item {
+          case .task(let task): TaskCard(task: task)
+          case .suggestion(let suggestion): SuggestionCard(suggestion: suggestion)
+          }
+        }
+        .id(item.id)
+        .transition(.push(from: model.scrollStep >= 0 ? .bottom : .top))
       } else {
         EmptyCard()
       }
@@ -207,7 +212,7 @@ struct TaskCard: View {
           .font(.caption2.weight(.bold))
           .foregroundStyle(.secondary)
         Spacer()
-        Text("\(model.cardIndex + 1) of \(model.ranked.count)")
+        Text("\(model.cardIndex + 1) of \(model.feed.count)")
           .font(.caption2)
           .foregroundStyle(.secondary)
       }
@@ -251,28 +256,94 @@ struct TaskCard: View {
         Button("Never") { model.never(task) }
           .help("Dismiss for good")
         Spacer()
-        // The feed loops, so neither arrow ever runs out; they only switch off with a single card.
-        Button {
-          model.scroll(by: -1)
-        } label: {
-          Image(systemName: "chevron.up")
-        }
-        .disabled(model.ranked.count < 2)
-        .keyboardShortcut(.upArrow, modifiers: [])
-        .help("Previous card")
-        Button {
-          model.scroll(by: 1)
-        } label: {
-          Image(systemName: "chevron.down")
-        }
-        .disabled(model.ranked.count < 2)
-        .keyboardShortcut(.downArrow, modifiers: [])
-        .help("Next card. After the last one, the first comes back.")
+        ScrollArrows()
       }
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+  }
+}
+
+/// Previous and next. The feed loops, so neither runs out; they only switch off with a single card.
+struct ScrollArrows: View {
+  @EnvironmentObject var model: AppModel
+
+  var body: some View {
+    Button {
+      model.scroll(by: -1)
+    } label: {
+      Image(systemName: "chevron.up")
+    }
+    .disabled(model.feed.count < 2)
+    .keyboardShortcut(.upArrow, modifiers: [])
+    .help("Previous card")
+    Button {
+      model.scroll(by: 1)
+    } label: {
+      Image(systemName: "chevron.down")
+    }
+    .disabled(model.feed.count < 2)
+    .keyboardShortcut(.downArrow, modifiers: [])
+    .help("Next card. After the last one, the first comes back.")
+  }
+}
+
+/// A card for something to enjoy instead of something to do.
+struct SuggestionCard: View {
+  @EnvironmentObject var model: AppModel
+  let suggestion: Recommendation
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text(suggestion.bucket == "explore" ? "SOMETHING DIFFERENT" : "YOU MIGHT LIKE")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(.purple)
+        Spacer()
+        Text("\(model.cardIndex + 1) of \(model.feed.count)")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+
+      Text(suggestion.title)
+        .font(.title3.weight(.semibold))
+        .fixedSize(horizontal: false, vertical: true)
+
+      if !suggestion.why.isEmpty {
+        Text(suggestion.why)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      HStack(spacing: 6) {
+        Chip(text: suggestion.kind, systemImage: suggestion.icon)
+        Chip(text: suggestion.webURL?.host ?? suggestion.source)
+        if suggestion.estMinutes > 0 { Chip(text: "~\(suggestion.estMinutes) min") }
+      }
+
+      Button {
+        model.openSuggestion(suggestion)
+      } label: {
+        Label("Open", systemImage: "arrow.up.forward.app")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+      .tint(.purple)
+      .controlSize(.large)
+      .help(suggestion.url)
+
+      HStack(spacing: 6) {
+        Button("Not for me") { model.dismissSuggestion(suggestion) }
+          .help("Remove it and show fewer like it")
+        Spacer()
+        ScrollArrows()
+      }
+    }
+    .padding(12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
   }
 }
 
@@ -698,6 +769,29 @@ struct SettingsView: View {
             NSWorkspace.shared.open(Store.applicationSupport())
           }
         }
+      }
+
+      Section("Suggestions") {
+        let onHand = model.feed.filter { if case .suggestion = $0 { return true } else { return false } }.count
+        Text(
+          model.mode == .lockIn
+            ? "Lock in mode shows tasks only."
+            : "\(onHand) in your feed. Sonnet turns what you watch and read into searches of arXiv and Hacker News, then picks the best few."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        HStack {
+          Button(model.findingSuggestions ? "Looking…" : "Find suggestions now") {
+            model.suggestionsTick(force: true)
+          }
+          .disabled(model.findingSuggestions || !model.hasAPIKey)
+          Text(model.suggestionNote)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Text("Searches use general subject words only, never names. Only those words leave your Mac.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       Section("Today") {
