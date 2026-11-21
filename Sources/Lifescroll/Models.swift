@@ -78,9 +78,9 @@ enum Mode: String, CaseIterable, Identifiable {
 
   var explanation: String {
     switch self {
-    case .dopamine: return "Never interrupts."
-    case .balanced: return "Nudges after 20 minutes of scrolling."
-    case .lockIn: return "Nudges after 5 minutes of scrolling."
+    case .dopamine: return "Never interrupts. The feed is mostly suggestions."
+    case .balanced: return "Nudges after 20 minutes of scrolling. A suggestion every few cards."
+    case .lockIn: return "Nudges after 5 minutes of scrolling. Tasks only."
     }
   }
 }
@@ -276,6 +276,94 @@ struct EntityDecisions: Codable, Equatable {
   }
 
   var decisions: [Decision]
+}
+
+// MARK: - Suggestions (the fun half of the feed)
+
+struct Recommendation: Identifiable, Equatable {
+  var id: String = UUID().uuidString
+  var title: String
+  var url: String
+  /// Where it was found: "arXiv" or "Hacker News".
+  var source: String
+  /// paper, article, video or discussion.
+  var kind: String
+  /// One line on why the user would like it.
+  var why: String
+  /// "related" to current interests, or "explore" for something outside them.
+  var bucket: String
+  var estMinutes: Int = 0
+  var created: Date = Date()
+  /// new, opened, dismissed or expired.
+  var status: String = "new"
+
+  /// Links come from the search services' own results and are still checked before opening.
+  var webURL: URL? {
+    guard let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased(),
+      scheme == "http" || scheme == "https", parsed.host != nil
+    else { return nil }
+    return parsed
+  }
+
+  var icon: String {
+    switch kind {
+    case "paper": return "doc.text"
+    case "video": return "play.rectangle"
+    case "discussion": return "bubble.left.and.bubble.right"
+    default: return "newspaper"
+    }
+  }
+}
+
+/// One card in the feed: something to do, or something to enjoy.
+enum FeedItem: Identifiable, Equatable {
+  case task(TaskItem)
+  case suggestion(Recommendation)
+
+  var id: String {
+    switch self {
+    case .task(let task): return "task-\(task.id)"
+    case .suggestion(let suggestion): return "suggestion-\(suggestion.id)"
+    }
+  }
+}
+
+/// Something a search turned up, before Sonnet has decided whether it is worth showing.
+struct Candidate: Equatable {
+  var id: String = ""
+  var title: String
+  var url: String
+  var source: String
+  var snippet: String = ""
+  var published: Date? = nil
+  var points: Int? = nil
+  var bucket: String = "related"
+}
+
+/// What the user has been watching and reading, as recorded by the reading step.
+struct InterestSignal: Equatable {
+  let title: String
+  let topic: String
+  let kind: String
+  let source: String
+}
+
+struct SearchPlan: Codable, Equatable {
+  var arxivQueries: [String]
+  var hnQueries: [String]
+  var interestsSummary: String
+}
+
+struct PickResult: Codable, Equatable {
+  struct Pick: Codable, Equatable {
+    var candidateId: String
+    var why: String
+    var kind: String
+    var bucket: String
+    var estMinutes: Int
+  }
+
+  var picks: [Pick]
 }
 
 enum JSONCoding {

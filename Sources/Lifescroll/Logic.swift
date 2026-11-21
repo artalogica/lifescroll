@@ -88,6 +88,69 @@ enum Feed {
     guard count > 0 else { return 0 }
     return ((index % count) + count) % count
   }
+
+  /// Where the popover should sit after the feed has been rebuilt. It follows the card that was on
+  /// screen, so a background refresh cannot slide a different card under the pointer. If that card
+  /// is gone (done, dismissed, opened), the position stays put and the next card moves up into it.
+  static func position(following id: String?, in feed: [FeedItem], previous: Int) -> Int {
+    if let id, let index = feed.firstIndex(where: { $0.id == id }) { return index }
+    return min(max(previous, 0), max(feed.count - 1, 0))
+  }
+
+  /// Blends tasks and suggestions according to the mode.
+  /// - Lock in: tasks only.
+  /// - Balanced: one suggestion after every three tasks, so suggestions stay the minority.
+  /// - Pure dopamine: three suggestions, then a task, and everything left over after that.
+  static func mix(tasks: [TaskItem], suggestions: [Recommendation], mode: Mode) -> [FeedItem] {
+    let taskItems = tasks.map(FeedItem.task)
+    let suggestionItems = suggestions.map(FeedItem.suggestion)
+    switch mode {
+    case .lockIn:
+      return taskItems
+    case .balanced:
+      // With no tasks at all, a few suggestions keep the feed from being empty.
+      let allowed =
+        tasks.isEmpty ? min(3, suggestions.count) : min(suggestions.count, max(1, (tasks.count + 2) / 3))
+      return interleave(taskItems, Array(suggestionItems.prefix(allowed)), every: 3)
+    case .dopamine:
+      return interleave(suggestionItems, taskItems, every: 3)
+    }
+  }
+
+  /// `every` items from `main`, then one from `other`, repeating; whatever is left goes on the end.
+  static func interleave(_ main: [FeedItem], _ other: [FeedItem], every: Int) -> [FeedItem] {
+    var result: [FeedItem] = []
+    var mainIndex = 0
+    var otherIndex = 0
+    while mainIndex < main.count {
+      let end = min(mainIndex + max(every, 1), main.count)
+      result.append(contentsOf: main[mainIndex..<end])
+      mainIndex = end
+      if otherIndex < other.count {
+        result.append(other[otherIndex])
+        otherIndex += 1
+      }
+    }
+    result.append(contentsOf: other[otherIndex...])
+    return result
+  }
+}
+
+enum SuggestionSchedule {
+  /// Fewer than this many unopened suggestions means it is worth looking for more.
+  static let lowWater = 4
+  /// Shortest gap between two successful searches.
+  static let gap: TimeInterval = 2 * 3600
+  /// How long to wait after any attempt, including a failed one, before trying again.
+  static let retryGap: TimeInterval = 20 * 60
+
+  /// Whether it is time to look for more suggestions. Lock in mode never fetches any.
+  static func shouldFind(mode: Mode, onHand: Int, lastSuccess: Date?, lastAttempt: Date?, now: Date) -> Bool {
+    guard mode != .lockIn, onHand < lowWater else { return false }
+    if let lastAttempt, now.timeIntervalSince(lastAttempt) < retryGap { return false }
+    if let lastSuccess, now.timeIntervalSince(lastSuccess) < gap { return false }
+    return true
+  }
 }
 
 /// Turns a stream of scroll-wheel or trackpad deltas into "next card" and "previous card" steps.

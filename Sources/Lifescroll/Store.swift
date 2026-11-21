@@ -40,6 +40,9 @@ final class Store: @unchecked Sendable {
     CREATE INDEX IF NOT EXISTS sightings_entity ON entity_sightings(entity_id, ts);
     CREATE TABLE IF NOT EXISTS entity_links (
       a_id TEXT, b_id TEXT, weight INTEGER, last_seen REAL, PRIMARY KEY (a_id, b_id));
+    CREATE TABLE IF NOT EXISTS recommendations (
+      id TEXT PRIMARY KEY, title TEXT, url TEXT UNIQUE, source TEXT, kind TEXT, why TEXT,
+      bucket TEXT, est_minutes INTEGER, created REAL, status TEXT);
     """
 
   init(path: String, framesDirectory: URL) throws {
@@ -421,6 +424,91 @@ final class Store: @unchecked Sendable {
       guard let other = entity(id: row.string("other")), !other.ignored else { return nil }
       return EntityLink(entity: other, weight: row.int("weight"))
     }
+  }
+
+  // MARK: - Suggestions
+
+  private func recommendation(from row: DBRow) -> Recommendation {
+    Recommendation(
+      id: row.string("id"), title: row.string("title"), url: row.string("url"),
+      source: row.string("source"), kind: row.string("kind"), why: row.string("why"),
+      bucket: row.string("bucket"), estMinutes: row.int("est_minutes"),
+      created: row.date("created") ?? Date(), status: row.string("status"))
+  }
+
+  /// Adds a suggestion unless one with the same link was ever stored. Returns whether it was added.
+  @discardableResult
+  func add(_ suggestion: Recommendation) -> Bool {
+    let before = recommendationCount()
+    _ = try? db.execute(
+      """
+      INSERT OR IGNORE INTO recommendations (id, title, url, source, kind, why, bucket,
+        est_minutes, created, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      [
+        .text(suggestion.id), .text(suggestion.title), .text(suggestion.url),
+        .text(suggestion.source), .text(suggestion.kind), .text(suggestion.why),
+        .text(suggestion.bucket), .int(Int64(suggestion.estMinutes)), .date(suggestion.created),
+        .text(suggestion.status),
+      ])
+    return recommendationCount() > before
+  }
+
+  private func recommendationCount() -> Int {
+    (try? db.query("SELECT COUNT(*) AS n FROM recommendations"))?.first?.int("n") ?? 0
+  }
+
+  func recommendations(status: String, limit: Int = 50) -> [Recommendation] {
+    let rows = try? db.query(
+      "SELECT * FROM recommendations WHERE status = ? ORDER BY created DESC, rowid ASC LIMIT ?",
+      [.text(status), .int(Int64(limit))])
+    return (rows ?? []).map(recommendation(from:))
+  }
+
+  func setRecommendationStatus(_ id: String, _ status: String) {
+    _ = try? db.execute(
+      "UPDATE recommendations SET status = ? WHERE id = ?", [.text(status), .text(id)])
+  }
+
+  /// Every link ever suggested, whatever happened to it, so nothing is suggested twice.
+  func suggestedURLs() -> Set<String> {
+    Set(((try? db.query("SELECT url FROM recommendations")) ?? []).map { $0.string("url") })
+  }
+
+  /// What the user opened and what they said was not for them, newest first.
+  func suggestionFeedback(limit: Int = 30) -> [(title: String, status: String)] {
+    let rows = try? db.query(
+      "SELECT title, status FROM recommendations WHERE status IN ('opened', 'dismissed') ORDER BY created DESC LIMIT ?",
+      [.int(Int64(limit))])
+    return (rows ?? []).map { ($0.string("title"), $0.string("status")) }
+  }
+
+  /// Unopened suggestions older than the cutoff stop being shown.
+  func expireRecommendations(before cutoff: Date) {
+    _ = try? db.execute(
+      "UPDATE recommendations SET status = 'expired' WHERE status = 'new' AND created < ?",
+      [.date(cutoff)])
+  }
+
+  /// What the user has recently watched and read, newest first.
+  func interestSignals(since: Date, limit: Int = 40) -> [InterestSignal] {
+    let rows = try? db.query(
+      "SELECT title, topic, kind, source FROM content_seen WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+      [.date(since), .int(Int64(limit))])
+    return (rows ?? []).map {
+      InterestSignal(
+        title: $0.string("title"), topic: $0.string("topic"), kind: $0.string("kind"),
+        source: $0.string("source"))
+    }
+  }
+
+  /// Links and titles of things the user has already seen, so they are not suggested back to them.
+  func seenContent() -> (urls: Set<String>, titles: Set<String>) {
+    let rows = (try? db.query("SELECT url, title FROM content_seen")) ?? []
+    return (
+      Set(rows.map { $0.string("url") }.filter { !$0.isEmpty }),
+      Set(rows.map { EntityMatching.normalize($0.string("title")) }.filter { !$0.isEmpty })
+    )
   }
 
   // MARK: - Events (the training log)

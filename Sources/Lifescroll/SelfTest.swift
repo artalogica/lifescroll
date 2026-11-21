@@ -29,6 +29,7 @@ enum SelfTest {
     decoding()
     analyzerInputs()
     knowledgeGraph()
+    suggestions()
     print(failures == 0 ? "PASS  \(passes) checks" : "FAILED  \(failures) of \(passes + failures) checks")
     return failures == 0
   }
@@ -354,6 +355,183 @@ enum SelfTest {
     check(analyzer.mergeInput(quiet, now: now) == nil, "analyzer: Sonnet is not called when nothing changed")
     check(analyzer.extractionContent(for: frames, now: now).isEmpty, "analyzer: no request when the screenshots are gone")
     check(extraction.entities == nil && analyzer.unknownMentions(extraction).isEmpty, "analyzer: readings stored before entities existed still load and need no indexing")
+  }
+
+  private static func kinds(_ feed: [FeedItem]) -> String {
+    feed.map { if case .task = $0 { return "T" } else { return "S" } }.joined()
+  }
+
+  private static func suggestions() {
+    let tasks = (1...5).map { TaskItem(title: "Task \($0)", firstSeen: now) }
+    let recs = (1...8).map { Recommendation(title: "Rec \($0)", url: "https://example.org/\($0)", source: "Hacker News", kind: "article", why: "", bucket: "related") }
+
+    check(kinds(Feed.mix(tasks: tasks, suggestions: recs, mode: .lockIn)) == "TTTTT", "feed: Lock in shows tasks only")
+    check(kinds(Feed.mix(tasks: tasks, suggestions: recs, mode: .balanced)) == "TTTSTTS", "feed: Balanced puts one suggestion after every three tasks")
+    check(kinds(Feed.mix(tasks: tasks, suggestions: recs, mode: .dopamine)) == "SSSTSSSTSSTTT", "feed: Pure dopamine leads with suggestions and still includes every task")
+    check(kinds(Feed.mix(tasks: [], suggestions: recs, mode: .balanced)) == "SSS", "feed: with no tasks, Balanced still shows a few suggestions")
+    check(kinds(Feed.mix(tasks: Array(tasks.prefix(2)), suggestions: recs, mode: .balanced)) == "TTS", "feed: suggestions stay the minority in Balanced")
+    check(kinds(Feed.mix(tasks: tasks, suggestions: [], mode: .dopamine)) == "TTTTT" && Feed.mix(tasks: [], suggestions: [], mode: .dopamine).isEmpty, "feed: no suggestions yet means tasks only")
+    let mixed = Feed.mix(tasks: tasks, suggestions: recs, mode: .dopamine)
+    check(Set(mixed.map(\.id)).count == mixed.count, "feed: every card has its own id")
+
+    check(CandidateSources.sanitize("  Humanoid motion-imitation: PPO & sim2sim!! transfer learning extra words ") == "Humanoid motion-imitation PPO sim2sim transfer learning", "search: queries are reduced to at most six plain words")
+    check(CandidateSources.sanitize(["raft", "RAFT", " ", "a", "b", "c", "d"]) == ["raft", "a", "b", "c"], "search: at most four distinct queries per source")
+    let arxiv = CandidateSources.arxivURL(query: "humanoid motion imitation")?.absoluteString ?? ""
+    check(arxiv.hasPrefix("https://export.arxiv.org/api/query?search_query=all:humanoid%20AND%20all:motion%20AND%20all:imitation") && arxiv.contains("max_results=8"), "search: arXiv query URL")
+    let hn = CandidateSources.hnSearchURL(query: "reinforcement learning", now: now)?.absoluteString ?? ""
+    check(hn.hasPrefix("https://hn.algolia.com/api/v1/search?query=reinforcement%20learning&tags=story") && hn.contains("points%3E50") && hn.contains("created_at_i%3E"), "search: Hacker News query URL keeps to well-received recent stories")
+    check(CandidateSources.arxivURL(query: " !! ") == nil && CandidateSources.hnSearchURL(query: "", now: now) == nil, "search: empty queries make no request")
+
+    let atom = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>ArXiv Query</title>
+        <id>http://arxiv.org/api/abc</id>
+        <entry>
+          <id>http://arxiv.org/abs/2401.00001v2</id>
+          <published>2024-01-01T10:00:00Z</published>
+          <title>Learning Agile
+            Humanoid Motion</title>
+          <summary>  We present a method
+          for imitation.  </summary>
+        </entry>
+        <entry><id>http://arxiv.org/abs/2402.00002v1</id><published>2024-02-01T00:00:00Z</published><title>Second Paper</title><summary>S</summary></entry>
+      </feed>
+      """
+    let papers = CandidateSources.parseArxiv(Data(atom.utf8))
+    check(papers.count == 2 && papers.first?.title == "Learning Agile Humanoid Motion" && papers.first?.url == "https://arxiv.org/abs/2401.00001v2" && papers.first?.snippet == "We present a method for imitation." && papers.first?.published != nil, "search: arXiv results parse, with wrapped titles tidied")
+
+    let algolia = #"{"hits":[{"objectID":"101","title":"A Raft visualisation","url":"https://example.com/raft","points":412,"created_at_i":1790000000},{"objectID":"102","title":"Ask HN: How do you focus?","url":null,"points":95,"created_at_i":1790000001,"story_text":"Curious what works."},{"objectID":"103","title":"","url":"https://example.com/empty"}]}"#
+    let stories = CandidateSources.parseHN(Data(algolia.utf8), bucket: "explore")
+    check(stories.count == 2 && stories[0].points == 412 && stories[1].url == "https://news.ycombinator.com/item?id=102" && stories[1].bucket == "explore", "search: Hacker News results parse, and link-less stories point at their discussion")
+    check(CandidateSources.parseHN(Data("not json".utf8)).isEmpty && CandidateSources.parseArxiv(Data("<html>".utf8)).isEmpty, "search: unreadable replies give nothing, without crashing")
+
+    let raw = [
+      Candidate(title: "Keep me", url: "https://example.com/a", source: "Hacker News"),
+      Candidate(title: "Same link again", url: "http://www.example.com/a/", source: "Hacker News"),
+      Candidate(title: "Already suggested", url: "https://example.com/old", source: "arXiv"),
+      Candidate(title: "Raft explained!", url: "https://example.com/seen-title", source: "Hacker News"),
+      Candidate(title: "Bad link", url: "javascript:alert(1)", source: "Hacker News"),
+      Candidate(title: "Seen link", url: "https://example.com/watched", source: "Hacker News"),
+      Candidate(title: "Keep me too", url: "https://example.com/b", source: "arXiv"),
+    ]
+    let cleaned = CandidateSources.clean(raw, suggested: ["https://example.com/old/"], seenURLs: ["https://www.example.com/watched"], seenTitles: [EntityMatching.normalize("Raft explained")])
+    check(cleaned.map(\.title) == ["Keep me", "Keep me too"] && cleaned.map(\.id) == ["c1", "c2"], "search: repeats, old suggestions, things already seen and unsafe links are dropped")
+
+    guard let store = try? Store.inMemory() else { return check(false, "suggestions: open in-memory store") }
+    let recommender = Recommender(store: store)
+    check(recommender.interestsJSON(now: now) == nil, "suggestions: with nothing recorded, no planning call is made")
+    if let extraction = try? JSONCoding.decoder.decode(Extraction.self, from: Data(extractionFixture.utf8)) {
+      store.addObservation(start: now.addingTimeInterval(-600), end: now, extraction: extraction)
+    }
+    store.save(Entity(kind: .topic, name: "Consensus protocols", firstSeen: now, lastSeen: now))
+    store.save(Entity(kind: .person, name: "Maya Chen", firstSeen: now, lastSeen: now))
+    let interests = recommender.interestsJSON(now: now) ?? ""
+    check(interests.contains("distributed consensus") && interests.contains("Consensus protocols"), "suggestions: Sonnet is told what was watched and the topics worked on")
+    check(!interests.contains("Maya Chen"), "suggestions: people's names are not part of the interests")
+
+    let added = Recommender.apply([
+      PickResult.Pick(candidateId: "c2", why: "Builds on the Raft talk you watched", kind: "paper", bucket: "related", estMinutes: 25),
+      PickResult.Pick(candidateId: "c9", why: "Not a real candidate", kind: "article", bucket: "related", estMinutes: 5),
+      PickResult.Pick(candidateId: "c1", why: "A change of pace", kind: "article", bucket: "explore", estMinutes: 8),
+    ], candidates: cleaned, to: store, now: now, limit: 8)
+    let stored = store.recommendations(status: "new")
+    check(added == 2 && Set(stored.map(\.url)) == ["https://example.com/a", "https://example.com/b"], "suggestions: only offered candidates are stored, with the link the search returned")
+    check(stored.first { $0.kind == "paper" }?.why == "Builds on the Raft talk you watched", "suggestions: the card line and kind come from Sonnet")
+    check(Recommender.apply([PickResult.Pick(candidateId: "c1", why: "again", kind: "article", bucket: "related", estMinutes: 1)], candidates: cleaned, to: store, now: now, limit: 8) == 0, "suggestions: the same link is never stored twice")
+    check(Recommender.apply([PickResult.Pick(candidateId: "c1", why: "", kind: "article", bucket: "related", estMinutes: 1)], candidates: cleaned, to: store, now: now, limit: 0) == 0, "suggestions: nothing is added when the feed is already full")
+
+    if let first = stored.first, let second = stored.last {
+      store.setRecommendationStatus(first.id, "opened")
+      store.setRecommendationStatus(second.id, "dismissed")
+    }
+    check(store.recommendations(status: "new").isEmpty && store.suggestionFeedback().count == 2, "suggestions: opened and dismissed cards leave the feed and are remembered as feedback")
+    check(store.suggestedURLs().count == 2, "suggestions: links stay on record so they are not suggested again")
+    let picksInput = recommender.picksInput(candidates: cleaned, interests: interests)
+    check(picksInput.contains("said not for me") && picksInput.contains("opened it") && picksInput.contains("\"id\" : \"c1\""), "suggestions: the choosing step sees earlier feedback and the candidate ids")
+
+    store.add(Recommendation(title: "Stale", url: "https://example.com/stale", source: "arXiv", kind: "paper", why: "", bucket: "related", created: now.addingTimeInterval(-8 * 86_400)))
+    store.expireRecommendations(before: now.addingTimeInterval(-7 * 86_400))
+    check(store.recommendations(status: "new").isEmpty && store.recommendations(status: "expired").count == 1, "suggestions: unopened ones expire after a week")
+
+    check(schemaIsStrict(Schema.searchPlan) && schemaIsStrict(Schema.picks), "suggestions: both schemas are strict")
+    let plan = try? JSONCoding.decoder.decode(SearchPlan.self, from: Data(#"{"arxiv_queries":["humanoid imitation learning"],"hn_queries":["robot learning"],"interests_summary":"RL and robotics"}"#.utf8))
+    let picked = try? JSONCoding.decoder.decode(PickResult.self, from: Data(#"{"picks":[{"candidate_id":"c1","why":"w","kind":"video","bucket":"explore","est_minutes":12}]}"#.utf8))
+    check(plan?.hnQueries == ["robot learning"] && picked?.picks.first?.candidateId == "c1" && picked?.picks.first?.estMinutes == 12, "suggestions: Sonnet's plan and picks decode")
+
+    let recent = now.addingTimeInterval(-600)
+    check(SuggestionSchedule.shouldFind(mode: .balanced, onHand: 0, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: fetched when the feed has none")
+    check(!SuggestionSchedule.shouldFind(mode: .lockIn, onHand: 0, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: never fetched in Lock in")
+    check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 4, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: not fetched while enough are on hand")
+    check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: recent, lastAttempt: nil, now: now) && !SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: nil, lastAttempt: recent, now: now), "suggestions: at most one fetch every two hours, and failures wait twenty minutes")
+
+    // Found in review: related results alone can fill the 50-candidate cap and squeeze out the front page.
+    let crowded =
+      (1...64).map { Candidate(title: "Related \($0)", url: "https://example.com/r\($0)", source: "arXiv") }
+      + (1...20).map { Candidate(title: "Front \($0)", url: "https://example.com/f\($0)", source: "Hacker News", bucket: "explore") }
+    let unreserved = CandidateSources.clean(crowded, suggested: [], seenURLs: [], seenTitles: [])
+    let reserved = CandidateSources.clean(CandidateSources.reservingExplore(crowded), suggested: [], seenURLs: [], seenTitles: [])
+    check(unreserved.filter { $0.bucket == "explore" }.isEmpty, "review: without a reservation the cap drops every explore candidate")
+    check(reserved.count == 50 && reserved.filter { $0.bucket == "explore" }.count == 15, "review: explore candidates keep 15 of the 50 places")
+
+    // Found in review: a rebuilt feed must keep showing the same card, not the same position.
+    let before = Feed.mix(tasks: tasks, suggestions: [], mode: .dopamine)
+    let after = Feed.mix(tasks: tasks, suggestions: recs, mode: .dopamine)
+    let moved = Feed.position(following: before[0].id, in: after, previous: 0)
+    check(moved == 3 && after[moved].id == before[0].id, "review: the card on screen is followed when suggestions arrive in front of it")
+    check(Feed.position(following: "task-gone", in: after, previous: 2) == 2, "review: when the card is gone, the next one moves up into its place")
+    check(Feed.position(following: "task-gone", in: after, previous: 99) == after.count - 1 && Feed.position(following: nil, in: [], previous: 5) == 0, "review: the position never points past the end")
+
+    // Found in review: once arXiv says to slow down, no more arXiv requests are sent in that round.
+    let throttledCalls = Counter()
+    let fourQueries = SearchPlan(arxivQueries: ["a b", "c d", "e f", "g h"], hnQueries: ["raft"], interestsSummary: "")
+    let throttled = wait { () -> [Int] in
+      let result = await recommender.gather(plan: fourQueries, now: now, pause: 1_000_000) { url in
+        if url.host == "export.arxiv.org" {
+          throttledCalls.arxiv += 1
+          throw SearchError(message: "slow down", rateLimited: true)
+        }
+        throttledCalls.other += 1
+        return Data(algolia.utf8)
+      }
+      return [result.found.count, result.problems.count]
+    }
+    check(throttledCalls.arxiv == 1 && throttledCalls.other == 2 && throttled == [4, 1], "review: a rate limit stops arXiv after one request, and Hacker News still returns results")
+
+    let flakyCalls = Counter()
+    let twoQueries = SearchPlan(arxivQueries: ["a b", "c d"], hnQueries: [], interestsSummary: "")
+    _ = wait { () -> [Int] in
+      let result = await recommender.gather(plan: twoQueries, now: now, pause: 1_000_000) { url in
+        if url.host == "export.arxiv.org" {
+          flakyCalls.arxiv += 1
+          throw SearchError(message: "server error")
+        }
+        return Data(algolia.utf8)
+      }
+      return [result.found.count]
+    }
+    check(flakyCalls.arxiv == 4, "review: an ordinary failure still gets one retry per query")
+  }
+
+  private final class Counter: @unchecked Sendable {
+    var arxiv = 0
+    var other = 0
+  }
+
+  private final class Holder<Value>: @unchecked Sendable {
+    var value: Value?
+  }
+
+  /// Runs async work from the synchronous self-test and waits for it.
+  private static func wait<Value>(_ work: @escaping @Sendable () async -> Value) -> Value {
+    let holder = Holder<Value>()
+    let done = DispatchSemaphore(value: 0)
+    Task.detached {
+      holder.value = await work()
+      done.signal()
+    }
+    done.wait()
+    return holder.value!
   }
 
   private static func mention(_ name: String, _ kind: String, _ context: String = "worked on it") -> Extraction.Mention {

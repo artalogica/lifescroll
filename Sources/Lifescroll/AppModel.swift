@@ -19,8 +19,14 @@ final class AppModel: ObservableObject {
 
   let store: Store
   let analyzer: Analyzer
+  let recommender: Recommender
 
+  /// Open tasks in rank order.
   @Published var ranked: [TaskItem] = []
+  /// What the popover scrolls through: tasks and suggestions, blended by mode.
+  @Published var feed: [FeedItem] = []
+  @Published var findingSuggestions = false
+  @Published var suggestionNote = ""
   @Published var cardIndex = 0
   /// Direction of the last scroll, so the next card slides in from the right side.
   @Published var scrollStep = 1
@@ -63,6 +69,7 @@ final class AppModel: ObservableObject {
     }
     store = opened
     analyzer = Analyzer(store: opened, sampleInterval: Self.activityInterval)
+    recommender = Recommender(store: opened)
     mode = Mode(rawValue: opened.value("mode") ?? "") ?? .balanced
     paused = opened.value("paused") == "1"
     distractingKeywords = opened.value("distracting") ?? Keywords.defaultDistracting
@@ -83,6 +90,7 @@ final class AppModel: ObservableObject {
     schedule(every: Self.activityInterval) { $0.activityTick() }
     schedule(every: Self.captureInterval) { $0.captureTick() }
     schedule(every: 60) { $0.analysisTick(force: false) }
+    schedule(every: 600) { $0.suggestionsTick(force: false) }
     schedule(every: 3600) { $0.maintenance() }
     maintenance()
   }
@@ -112,6 +120,11 @@ final class AppModel: ObservableObject {
     mode = newMode
     store.setValue("mode", newMode.rawValue)
     store.logEvent("mode_changed", context: ["mode": newMode.rawValue])
+    // The mode decides how tasks and suggestions are blended, so the feed is rebuilt and shown from
+    // the top. The reset comes after the reload, which would otherwise follow the old card.
+    reload()
+    cardIndex = 0
+    suggestionsTick(force: false)
   }
 
   func setPaused(_ flag: Bool) {
@@ -226,14 +239,98 @@ final class AppModel: ObservableObject {
         lastError = nil
       }
       reload()
+      // A fresh reading may have recorded new interests, so this is a good moment to top up.
+      if outcome.windows > 0 { suggestionsTick(force: false) }
+    }
+  }
+
+  // MARK: - Suggestions
+
+  private func storedDate(_ key: String) -> Date? {
+    store.value(key).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) }
+  }
+
+  func suggestionsTick(force: Bool) {
+    guard !findingSuggestions, hasAPIKey else { return }
+    // Lock in never shows suggestions, so even a forced search would be paid for and thrown away.
+    guard mode != .lockIn else {
+      if force { suggestionNote = "Lock in mode shows tasks only. Switch mode to get suggestions." }
+      return
+    }
+    let now = Date()
+    if !force {
+      guard !paused,
+        SuggestionSchedule.shouldFind(
+          mode: mode, onHand: store.recommendations(status: "new").count,
+          lastSuccess: storedDate("suggestions_last_success"),
+          lastAttempt: storedDate("suggestions_last_attempt"), now: now)
+      else { return }
+    }
+    findingSuggestions = true
+    store.setValue("suggestions_last_attempt", String(now.timeIntervalSince1970))
+    Task {
+      let outcome = await recommender.refresh(now: now)
+      findingSuggestions = false
+      if let error = outcome.error {
+        suggestionNote = "Could not find suggestions: \(error)"
+      } else {
+        store.setValue("suggestions_last_success", String(now.timeIntervalSince1970))
+        suggestionNote =
+          outcome.added > 0
+          ? "Added \(outcome.added) from \(outcome.candidates) found."
+          : (outcome.candidates > 0 ? "Found \(outcome.candidates), none worth showing." : "Nothing new found.")
+      }
+      reload()
+    }
+  }
+
+  func openSuggestion(_ suggestion: Recommendation) {
+    // Only a link that really opened counts as "opened", because that is fed back as a sign of interest.
+    if let url = suggestion.webURL, NSWorkspace.shared.open(url) {
+      store.logEvent("suggestion_opened", taskID: suggestion.id, context: context(for: suggestion))
+      store.setRecommendationStatus(suggestion.id, "opened")
+    } else {
+      store.logEvent("suggestion_open_failed", taskID: suggestion.id, context: context(for: suggestion))
+      store.setRecommendationStatus(suggestion.id, "expired")
+      lastError = "That link could not be opened, so the suggestion was removed."
+    }
+    reload()
+  }
+
+  func dismissSuggestion(_ suggestion: Recommendation) {
+    store.logEvent("suggestion_dismissed", taskID: suggestion.id, context: context(for: suggestion))
+    store.setRecommendationStatus(suggestion.id, "dismissed")
+    reload()
+  }
+
+  private func context(for suggestion: Recommendation) -> [String: String] {
+    [
+      "mode": mode.rawValue, "kind": suggestion.kind, "bucket": suggestion.bucket,
+      "source": suggestion.source, "front_app": current.app,
+    ]
+  }
+
+  /// Records that a card is on screen, or was scrolled past, whichever kind of card it is.
+  private func log(_ event: String, _ item: FeedItem, wrapped: Bool = false) {
+    switch item {
+    case .task(let task):
+      var details = context(for: task)
+      if wrapped { details["wrapped"] = "1" }
+      store.logEvent(event == "shown" ? "card_shown" : "scrolled_past", taskID: task.id, context: details)
+    case .suggestion(let suggestion):
+      var details = context(for: suggestion)
+      if wrapped { details["wrapped"] = "1" }
+      store.logEvent(
+        event == "shown" ? "suggestion_shown" : "suggestion_scrolled_past", taskID: suggestion.id,
+        context: details)
     }
   }
 
   // MARK: - Cards
 
-  var currentCard: TaskItem? {
-    guard ranked.indices.contains(cardIndex) else { return ranked.first }
-    return ranked[cardIndex]
+  var currentItem: FeedItem? {
+    guard feed.indices.contains(cardIndex) else { return feed.first }
+    return feed[cardIndex]
   }
 
   var setupIssues: [String] {
@@ -269,7 +366,10 @@ final class AppModel: ObservableObject {
   func reload() {
     let now = Date()
     ranked = Ranker.ranked(store.tasks(status: .open), now: now)
-    if cardIndex >= ranked.count { cardIndex = max(ranked.count - 1, 0) }
+    let onScreen = feed.indices.contains(cardIndex) ? feed[cardIndex].id : nil
+    feed = Feed.mix(
+      tasks: ranked, suggestions: store.recommendations(status: "new"), mode: mode)
+    cardIndex = Feed.position(following: onScreen, in: feed, previous: cardIndex)
     usage = store.usage(on: now)
     pendingFrames = store.pendingFrameCount()
     projectNames = Dictionary(
@@ -300,24 +400,20 @@ final class AppModel: ObservableObject {
     reload()
     refreshPermissions()
     cardIndex = 0
-    if let card = currentCard {
-      store.logEvent("card_shown", taskID: card.id, context: context(for: card))
-    }
+    if let item = currentItem { log("shown", item) }
     if comparePair == nil, Date().timeIntervalSince(lastCompare) > 3600 { offerComparison() }
   }
 
   /// Moves through the feed. It loops, so scrolling past the last card brings the first one back.
   func scroll(by step: Int) {
-    guard ranked.count > 1, comparePair == nil, ranked.indices.contains(cardIndex) else { return }
+    guard feed.count > 1, comparePair == nil, feed.indices.contains(cardIndex) else { return }
     let target = cardIndex + step
-    let next = Feed.wrap(target, count: ranked.count)
+    let next = Feed.wrap(target, count: feed.count)
     guard next != cardIndex else { return }
-    var leaving = context(for: ranked[cardIndex])
-    if !ranked.indices.contains(target) { leaving["wrapped"] = "1" }
-    store.logEvent("scrolled_past", taskID: ranked[cardIndex].id, context: leaving)
+    log("scrolled_past", feed[cardIndex], wrapped: !feed.indices.contains(target))
     scrollStep = step
     withAnimation(.easeOut(duration: 0.18)) { cardIndex = next }
-    store.logEvent("card_shown", taskID: ranked[next].id, context: context(for: ranked[next]))
+    log("shown", feed[next])
   }
 
   func markDone(_ task: TaskItem) {

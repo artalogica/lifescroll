@@ -36,6 +36,13 @@ every rebuild. Signing with a real developer identity (full Xcode and a free App
 | Index | after each read | Projects, people, documents and topics Haiku named are matched against the index by name. Claude Sonnet 5.5 is called only for names it has not seen before. |
 | Merge | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project, and writes each card's "why now" line. |
 
+| Suggest | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 turns what you have been watching and reading into search queries. arXiv and Hacker News are searched directly, and Sonnet picks up to 8 results worth a card. |
+
+Suggestions are the enjoyable half of the feed: a paper, an essay, a talk. Opening one or pressing
+"Not for me" removes it and is fed back into the next round of choosing. Search queries are general
+subject words only; Sonnet is told never to include names, and queries are stripped to plain words
+before they are sent. Links always come from the search results, never from the model's reply.
+
 Ranking is a hand-written score in `Logic.swift` (`Ranker.score`): importance, deadline urgency, how
 often and how long ago you saw it, whether someone is waiting, and your "which matters more?" picks.
 Your picks can outweigh everything inferred.
@@ -48,8 +55,13 @@ entries are linked each time they appear in the same ten-minute reading. The **P
 the popover opens it. Each entry shows its open tasks, what it is connected to, and a dated log of
 what you did with it. "Remove from index" hides an entry and stops it being re-added.
 
-Modes: **Pure dopamine** never interrupts, **Balanced** nudges after 20 minutes of scrolling,
-**Lock in** after 5.
+Modes set both the nudge and the blend of the feed:
+
+| Mode | Nudge | Feed |
+|---|---|---|
+| Pure dopamine | never | three suggestions, then a task |
+| Balanced | after 20 minutes of scrolling | one suggestion after every three tasks |
+| Lock in | after 5 minutes of scrolling | tasks only, and no suggestions are fetched |
 
 ## Where things are
 
@@ -57,6 +69,7 @@ Modes: **Pure dopamine** never interrupts, **Balanced** nudges after 20 minutes 
 |---|---|
 | `Sources/Lifescroll/Capture.swift` | Front-window sampling and screenshots |
 | `Sources/Lifescroll/Analyzer.swift` | Prompts, JSON schemas, the read and merge steps |
+| `Sources/Lifescroll/Recommendations.swift` | arXiv and Hacker News search, and the plan and pick steps for suggestions |
 | `Sources/Lifescroll/ClaudeClient.swift` | Raw HTTP to the Messages API, Keychain storage |
 | `Sources/Lifescroll/Logic.swift` | Ranking, nudge timing, key-frame choice, applying merge decisions |
 | `Sources/Lifescroll/Store.swift` | The SQLite schema and every query |
@@ -82,9 +95,17 @@ To confirm a new build can open your existing data, point it at a copy of the da
 .build/debug/Lifescroll --check-db /path/to/copy.sqlite
 ```
 
+To run one real search against arXiv and Hacker News, with no Claude calls:
+
+```bash
+.build/debug/Lifescroll --fetch-test "distributed consensus"
+```
+
+arXiv answers 429 when requests come too close together, so leave a while between runs.
+
 ## Not built yet
 
-- Recommendations (videos, papers). What you watch and read is already recorded in `content_seen`.
+- Searching YouTube directly. Videos currently appear only when Hacker News links to one.
 - Tone matching for card text.
 - A learned ranker to replace the hand-written score.
 - Using the index for ranking (a task inheriting urgency from its project) and for reopening a whole project.
