@@ -176,6 +176,13 @@ enum CandidateSources {
     return result
   }
 
+  /// Puts "explore" candidates first, capped, so the overall limit cannot squeeze them out.
+  /// Related results arrive first and can alone exceed the limit.
+  static func reservingExplore(_ candidates: [Candidate], slots: Int = 15) -> [Candidate] {
+    let explore = candidates.filter { $0.bucket == "explore" }.prefix(slots)
+    return explore + candidates.filter { $0.bucket != "explore" }
+  }
+
   static func fetch(_ url: URL) async throws -> Data {
     var request = URLRequest(url: url, timeoutInterval: 30)
     request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -185,7 +192,8 @@ enum CandidateSources {
       throw SearchError(
         message: status == 429
           ? "\(url.host ?? "The search service") is asking for fewer requests right now."
-          : "\(url.host ?? "The search service") returned status \(status).")
+          : "\(url.host ?? "The search service") returned status \(status).",
+        rateLimited: status == 429)
     }
     return data
   }
@@ -193,6 +201,8 @@ enum CandidateSources {
 
 struct SearchError: LocalizedError, Equatable {
   let message: String
+  /// The service said to slow down. Asking again straight away only extends the limit.
+  var rateLimited = false
   var errorDescription: String? { message }
 }
 
@@ -337,36 +347,51 @@ actor Recommender {
 
   /// Runs the searches for a plan and returns everything found, plus a note for each search that failed.
   /// One failed search does not stop the rest.
-  nonisolated func gather(plan: SearchPlan?, now: Date) async -> (found: [Candidate], problems: [String]) {
+  nonisolated func gather(
+    plan: SearchPlan?, now: Date, pause: UInt64 = Recommender.arxivPause,
+    fetch: @Sendable (URL) async throws -> Data = { try await CandidateSources.fetch($0) }
+  ) async -> (found: [Candidate], problems: [String]) {
     var found: [Candidate] = []
     var problems: [String] = []
 
-    func search(_ url: URL, retryAfter pause: UInt64? = nil) async -> Data? {
+    enum Attempt {
+      case data(Data)
+      case rateLimited
+      case failed
+    }
+
+    func search(_ url: URL, retryAfter retryPause: UInt64? = nil) async -> Attempt {
       do {
-        return try await CandidateSources.fetch(url)
+        return .data(try await fetch(url))
+      } catch let error as SearchError where error.rateLimited {
+        // Asked to slow down: do not retry, and let the caller stop asking this service.
+        problems.append(error.message)
+        return .rateLimited
       } catch {
-        // arXiv answers 429 when requests arrive too close together; one slower retry usually clears it.
-        if let pause {
-          try? await Task.sleep(nanoseconds: pause)
-          if let data = try? await CandidateSources.fetch(url) { return data }
+        // Any other failure gets one slower retry where the caller allows it.
+        if let retryPause {
+          try? await Task.sleep(nanoseconds: retryPause)
+          if let data = try? await fetch(url) { return .data(data) }
         }
         problems.append(error.localizedDescription)
-        return nil
+        return .failed
       }
     }
 
-    for (index, query) in CandidateSources.sanitize(plan?.arxivQueries ?? []).enumerated() {
+    arxiv: for (index, query) in CandidateSources.sanitize(plan?.arxivQueries ?? []).enumerated() {
       guard let url = CandidateSources.arxivURL(query: query) else { continue }
-      if index > 0 { try? await Task.sleep(nanoseconds: Self.arxivPause) }
-      if let data = await search(url, retryAfter: Self.arxivPause * 2) {
-        found += CandidateSources.parseArxiv(data)
+      if index > 0 { try? await Task.sleep(nanoseconds: pause) }
+      switch await search(url, retryAfter: pause * 2) {
+      case .data(let data): found += CandidateSources.parseArxiv(data)
+      case .rateLimited: break arxiv
+      case .failed: continue
       }
     }
     for query in CandidateSources.sanitize(plan?.hnQueries ?? []) {
       guard let url = CandidateSources.hnSearchURL(query: query, now: now) else { continue }
-      if let data = await search(url) { found += CandidateSources.parseHN(data) }
+      if case .data(let data) = await search(url) { found += CandidateSources.parseHN(data) }
     }
-    if let url = CandidateSources.hnFrontPageURL(), let data = await search(url) {
+    if let url = CandidateSources.hnFrontPageURL(), case .data(let data) = await search(url) {
       found += CandidateSources.parseHN(data, bucket: "explore")
     }
     return (found, problems)
@@ -382,24 +407,33 @@ actor Recommender {
     do {
       let interests = interestsJSON(now: now)
       var plan: SearchPlan?
+      var planProblem: String?
       if let interests {
-        let response = try await client.complete(
-          model: ClaudeClient.sonnet, system: Prompts.searchPlan,
-          content: [["type": "text", "text": interests]], schema: Schema.searchPlan, effort: "low")
-        store.addUsage(
-          model: ClaudeClient.sonnet, input: response.inputTokens, output: response.outputTokens, now: now)
-        plan = try JSONCoding.decoder.decode(SearchPlan.self, from: Data(response.text.utf8))
+        // A failed plan only loses the targeted searches; the front page still needs no plan.
+        do {
+          let response = try await client.complete(
+            model: ClaudeClient.sonnet, system: Prompts.searchPlan,
+            content: [["type": "text", "text": interests]], schema: Schema.searchPlan, effort: "low")
+          store.addUsage(
+            model: ClaudeClient.sonnet, input: response.inputTokens, output: response.outputTokens,
+            now: now)
+          plan = try JSONCoding.decoder.decode(SearchPlan.self, from: Data(response.text.utf8))
+        } catch ClaudeError.missingKey {
+          throw ClaudeError.missingKey
+        } catch {
+          planProblem = error.localizedDescription
+        }
       }
 
       let seen = store.seenContent()
       let gathered = await gather(plan: plan, now: now)
       let candidates = CandidateSources.clean(
-        gathered.found, suggested: store.suggestedURLs(), seenURLs: seen.urls,
-        seenTitles: seen.titles)
+        CandidateSources.reservingExplore(gathered.found), suggested: store.suggestedURLs(),
+        seenURLs: seen.urls, seenTitles: seen.titles)
       outcome.candidates = candidates.count
       guard !candidates.isEmpty else {
-        // Nothing at all came back: say why, if a search failed.
-        outcome.error = gathered.problems.first
+        // Nothing at all came back: say why, if planning or a search failed.
+        outcome.error = planProblem ?? gathered.problems.first
         return outcome
       }
 

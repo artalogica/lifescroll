@@ -464,6 +464,74 @@ enum SelfTest {
     check(!SuggestionSchedule.shouldFind(mode: .lockIn, onHand: 0, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: never fetched in Lock in")
     check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 4, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: not fetched while enough are on hand")
     check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: recent, lastAttempt: nil, now: now) && !SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: nil, lastAttempt: recent, now: now), "suggestions: at most one fetch every two hours, and failures wait twenty minutes")
+
+    // Found in review: related results alone can fill the 50-candidate cap and squeeze out the front page.
+    let crowded =
+      (1...64).map { Candidate(title: "Related \($0)", url: "https://example.com/r\($0)", source: "arXiv") }
+      + (1...20).map { Candidate(title: "Front \($0)", url: "https://example.com/f\($0)", source: "Hacker News", bucket: "explore") }
+    let unreserved = CandidateSources.clean(crowded, suggested: [], seenURLs: [], seenTitles: [])
+    let reserved = CandidateSources.clean(CandidateSources.reservingExplore(crowded), suggested: [], seenURLs: [], seenTitles: [])
+    check(unreserved.filter { $0.bucket == "explore" }.isEmpty, "review: without a reservation the cap drops every explore candidate")
+    check(reserved.count == 50 && reserved.filter { $0.bucket == "explore" }.count == 15, "review: explore candidates keep 15 of the 50 places")
+
+    // Found in review: a rebuilt feed must keep showing the same card, not the same position.
+    let before = Feed.mix(tasks: tasks, suggestions: [], mode: .dopamine)
+    let after = Feed.mix(tasks: tasks, suggestions: recs, mode: .dopamine)
+    let moved = Feed.position(following: before[0].id, in: after, previous: 0)
+    check(moved == 3 && after[moved].id == before[0].id, "review: the card on screen is followed when suggestions arrive in front of it")
+    check(Feed.position(following: "task-gone", in: after, previous: 2) == 2, "review: when the card is gone, the next one moves up into its place")
+    check(Feed.position(following: "task-gone", in: after, previous: 99) == after.count - 1 && Feed.position(following: nil, in: [], previous: 5) == 0, "review: the position never points past the end")
+
+    // Found in review: once arXiv says to slow down, no more arXiv requests are sent in that round.
+    let throttledCalls = Counter()
+    let fourQueries = SearchPlan(arxivQueries: ["a b", "c d", "e f", "g h"], hnQueries: ["raft"], interestsSummary: "")
+    let throttled = wait { () -> [Int] in
+      let result = await recommender.gather(plan: fourQueries, now: now, pause: 1_000_000) { url in
+        if url.host == "export.arxiv.org" {
+          throttledCalls.arxiv += 1
+          throw SearchError(message: "slow down", rateLimited: true)
+        }
+        throttledCalls.other += 1
+        return Data(algolia.utf8)
+      }
+      return [result.found.count, result.problems.count]
+    }
+    check(throttledCalls.arxiv == 1 && throttledCalls.other == 2 && throttled == [4, 1], "review: a rate limit stops arXiv after one request, and Hacker News still returns results")
+
+    let flakyCalls = Counter()
+    let twoQueries = SearchPlan(arxivQueries: ["a b", "c d"], hnQueries: [], interestsSummary: "")
+    _ = wait { () -> [Int] in
+      let result = await recommender.gather(plan: twoQueries, now: now, pause: 1_000_000) { url in
+        if url.host == "export.arxiv.org" {
+          flakyCalls.arxiv += 1
+          throw SearchError(message: "server error")
+        }
+        return Data(algolia.utf8)
+      }
+      return [result.found.count]
+    }
+    check(flakyCalls.arxiv == 4, "review: an ordinary failure still gets one retry per query")
+  }
+
+  private final class Counter: @unchecked Sendable {
+    var arxiv = 0
+    var other = 0
+  }
+
+  private final class Holder<Value>: @unchecked Sendable {
+    var value: Value?
+  }
+
+  /// Runs async work from the synchronous self-test and waits for it.
+  private static func wait<Value>(_ work: @escaping @Sendable () async -> Value) -> Value {
+    let holder = Holder<Value>()
+    let done = DispatchSemaphore(value: 0)
+    Task.detached {
+      holder.value = await work()
+      done.signal()
+    }
+    done.wait()
+    return holder.value!
   }
 
   private static func mention(_ name: String, _ kind: String, _ context: String = "worked on it") -> Extraction.Mention {

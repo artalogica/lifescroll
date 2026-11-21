@@ -120,9 +120,10 @@ final class AppModel: ObservableObject {
     mode = newMode
     store.setValue("mode", newMode.rawValue)
     store.logEvent("mode_changed", context: ["mode": newMode.rawValue])
-    // The mode decides how tasks and suggestions are blended, so the feed is rebuilt from the top.
-    cardIndex = 0
+    // The mode decides how tasks and suggestions are blended, so the feed is rebuilt and shown from
+    // the top. The reset comes after the reload, which would otherwise follow the old card.
     reload()
+    cardIndex = 0
     suggestionsTick(force: false)
   }
 
@@ -251,6 +252,11 @@ final class AppModel: ObservableObject {
 
   func suggestionsTick(force: Bool) {
     guard !findingSuggestions, hasAPIKey else { return }
+    // Lock in never shows suggestions, so even a forced search would be paid for and thrown away.
+    guard mode != .lockIn else {
+      if force { suggestionNote = "Lock in mode shows tasks only. Switch mode to get suggestions." }
+      return
+    }
     let now = Date()
     if !force {
       guard !paused,
@@ -279,9 +285,15 @@ final class AppModel: ObservableObject {
   }
 
   func openSuggestion(_ suggestion: Recommendation) {
-    store.logEvent("suggestion_opened", taskID: suggestion.id, context: context(for: suggestion))
-    if let url = suggestion.webURL { NSWorkspace.shared.open(url) }
-    store.setRecommendationStatus(suggestion.id, "opened")
+    // Only a link that really opened counts as "opened", because that is fed back as a sign of interest.
+    if let url = suggestion.webURL, NSWorkspace.shared.open(url) {
+      store.logEvent("suggestion_opened", taskID: suggestion.id, context: context(for: suggestion))
+      store.setRecommendationStatus(suggestion.id, "opened")
+    } else {
+      store.logEvent("suggestion_open_failed", taskID: suggestion.id, context: context(for: suggestion))
+      store.setRecommendationStatus(suggestion.id, "expired")
+      lastError = "That link could not be opened, so the suggestion was removed."
+    }
     reload()
   }
 
@@ -354,9 +366,10 @@ final class AppModel: ObservableObject {
   func reload() {
     let now = Date()
     ranked = Ranker.ranked(store.tasks(status: .open), now: now)
+    let onScreen = feed.indices.contains(cardIndex) ? feed[cardIndex].id : nil
     feed = Feed.mix(
       tasks: ranked, suggestions: store.recommendations(status: "new"), mode: mode)
-    if cardIndex >= feed.count { cardIndex = max(feed.count - 1, 0) }
+    cardIndex = Feed.position(following: onScreen, in: feed, previous: cardIndex)
     usage = store.usage(on: now)
     pendingFrames = store.pendingFrameCount()
     projectNames = Dictionary(

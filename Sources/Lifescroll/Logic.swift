@@ -89,6 +89,14 @@ enum Feed {
     return ((index % count) + count) % count
   }
 
+  /// Where the popover should sit after the feed has been rebuilt. It follows the card that was on
+  /// screen, so a background refresh cannot slide a different card under the pointer. If that card
+  /// is gone (done, dismissed, opened), the position stays put and the next card moves up into it.
+  static func position(following id: String?, in feed: [FeedItem], previous: Int) -> Int {
+    if let id, let index = feed.firstIndex(where: { $0.id == id }) { return index }
+    return min(max(previous, 0), max(feed.count - 1, 0))
+  }
+
   /// Blends tasks and suggestions according to the mode.
   /// - Lock in: tasks only.
   /// - Balanced: one suggestion after every three tasks, so suggestions stay the minority.

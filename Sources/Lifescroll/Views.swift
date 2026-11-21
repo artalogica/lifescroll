@@ -784,7 +784,7 @@ struct SettingsView: View {
           Button(model.findingSuggestions ? "Looking…" : "Find suggestions now") {
             model.suggestionsTick(force: true)
           }
-          .disabled(model.findingSuggestions || !model.hasAPIKey)
+          .disabled(model.findingSuggestions || !model.hasAPIKey || model.mode == .lockIn)
           Text(model.suggestionNote)
             .font(.caption)
             .foregroundStyle(.secondary)
