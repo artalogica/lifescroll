@@ -63,6 +63,10 @@ Ranking is a hand-written score in `Logic.swift` (`Ranker.score`): importance, d
 often and how long ago you saw it, whether someone is waiting, and your "which matters more?" picks.
 Your picks can outweigh everything inferred.
 
+The interface is dark smoked glass throughout: a blurred, dark-tinted pane with light text, so it
+reads the same over a white wallpaper as a dark one and in either system appearance. Colour is used
+in one place only, the blush on suggestion cards.
+
 The card feed is a loop. Scroll with the trackpad, mouse wheel or arrow keys; after the last card the
 first one comes back. Done and Never take a card out of the loop, and Not now hides it for three hours.
 
@@ -91,7 +95,9 @@ Modes set both the nudge and the blend of the feed:
 | `Sources/Lifescroll/Logic.swift` | Ranking, nudge timing, key-frame choice, applying merge decisions |
 | `Sources/Lifescroll/Store.swift` | The SQLite schema and every query |
 | `Sources/Lifescroll/AppModel.swift` | Timers, card actions, notifications |
-| `Sources/Lifescroll/Views.swift` | Popover, task list and settings |
+| `Sources/Lifescroll/Views.swift` | Popover, task list, projects and settings |
+| `Sources/Lifescroll/Theme.swift` | The smoked-glass look: panels, cards, pill buttons, switches, chips |
+| `Sources/Lifescroll/Preview.swift` | Draws the interface to images with sample data |
 | `Sources/Lifescroll/SelfTest.swift` | Checks run by `--self-test` |
 
 Data lives in `~/Library/Application Support/Lifescroll/`: `lifescroll.sqlite` and a `frames/` folder.
@@ -119,6 +125,13 @@ To run one real search against arXiv and Hacker News, with no Claude calls:
 ```
 
 arXiv answers 429 when requests come too close together, so leave a while between runs.
+
+To see the interface without running the app, draw it to images over a light and a dark backdrop.
+It uses invented sample data and opens nothing of yours:
+
+```bash
+.build/debug/Lifescroll --render-ui build/ui-preview
+```
 
 To time text recognition on your newest stored screenshots (it prints counts, never the text):
 

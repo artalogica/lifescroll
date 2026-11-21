@@ -67,6 +67,15 @@ enum Mode: String, CaseIterable, Identifiable {
     }
   }
 
+  /// The name as it appears in the popover's switch, where three have to fit side by side.
+  var shortLabel: String {
+    switch self {
+    case .dopamine: return "Dopamine"
+    case .balanced: return "Balanced"
+    case .lockIn: return "Lock in"
+    }
+  }
+
   /// How long on a distracting app before a nudge. Nil means never interrupt.
   var nudgeAfter: TimeInterval? {
     switch self {

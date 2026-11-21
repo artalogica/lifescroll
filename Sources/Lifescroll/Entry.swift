@@ -28,6 +28,19 @@ enum Entry {
         exit(1)
       }
     }
+    // `--render-ui <folder>` draws the interface to PNG files with sample data, over a light and a
+    // dark backdrop. It opens no real data and makes no network calls.
+    if let flag = CommandLine.arguments.firstIndex(of: "--render-ui"),
+      CommandLine.arguments.indices.contains(flag + 1)
+    {
+      let folder = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+      let written = MainActor.assumeIsolated { () -> [String] in
+        _ = NSApplication.shared
+        return UIPreview.render(to: folder)
+      }
+      for name in written { print(name) }
+      exit(written.isEmpty ? 1 : 0)
+    }
     // `--ocr-test [count]` reads the text off the newest stored screenshots and reports timing and size.
     // It prints numbers only, never the text itself, and makes no network calls.
     if let flag = CommandLine.arguments.firstIndex(of: "--ocr-test") {

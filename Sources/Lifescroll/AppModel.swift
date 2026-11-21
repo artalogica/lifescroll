@@ -59,14 +59,20 @@ final class AppModel: ObservableObject {
   private var started = false
   private var tick = 0
 
-  private init() {
+  /// The app uses `shared`, which opens the real database. A store can be passed in to build a model
+  /// over sample data, which is how `--render-ui` draws the interface without touching real data.
+  init(store injected: Store? = nil) {
     let opened: Store
-    do {
-      opened = try Store.openDefault()
-    } catch {
-      // Keep the app usable even if the file cannot be opened; nothing persists in this case.
-      opened = try! Store.inMemory()
-      lastError = "Could not open the database, so nothing will be saved: \(error.localizedDescription)"
+    if let injected {
+      opened = injected
+    } else {
+      do {
+        opened = try Store.openDefault()
+      } catch {
+        // Keep the app usable even if the file cannot be opened; nothing persists in this case.
+        opened = try! Store.inMemory()
+        lastError = "Could not open the database, so nothing will be saved: \(error.localizedDescription)"
+      }
     }
     store = opened
     analyzer = Analyzer(store: opened, sampleInterval: Self.activityInterval)

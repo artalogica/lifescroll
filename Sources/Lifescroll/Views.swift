@@ -70,6 +70,7 @@ final class ScrollMonitor {
 
 struct PopoverView: View {
   @EnvironmentObject var model: AppModel
+  @Environment(\.renderingPreview) private var preview
   @State private var scrollMonitor = ScrollMonitor()
 
   var body: some View {
@@ -92,9 +93,9 @@ struct PopoverView: View {
         EmptyCard()
       }
       if let error = model.lastError {
-        Text(error)
-          .font(.caption)
-          .foregroundStyle(.red)
+        Label(error, systemImage: "exclamationmark.circle")
+          .font(.system(size: 11))
+          .foregroundStyle(Glass.coral)
           .fixedSize(horizontal: false, vertical: true)
       }
       footer
@@ -102,8 +103,18 @@ struct PopoverView: View {
     .padding(14)
     .frame(width: 360)
     .clipped()
-    .background(WindowReader { scrollMonitor.window = $0 })
+    .glassPanel()
+    .background {
+      if !preview {
+        WindowReader { window in
+          scrollMonitor.window = window
+          // The popover is always dark glass, whatever the system appearance.
+          window?.appearance = NSAppearance(named: .darkAqua)
+        }
+      }
+    }
     .onAppear {
+      guard !preview else { return }
       model.popoverOpened()
       scrollMonitor.start { step in model.scroll(by: step) }
     }
@@ -112,31 +123,29 @@ struct PopoverView: View {
 
   private var header: some View {
     HStack(spacing: 8) {
-      Picker("Mode", selection: Binding(get: { model.mode }, set: { model.setMode($0) })) {
-        ForEach(Mode.allCases) { mode in
-          Text(mode.label).tag(mode)
-        }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .help(model.mode.explanation)
+      GlassSegmented(
+        options: Mode.allCases.map { ($0, $0.shortLabel) },
+        selection: Binding(get: { model.mode }, set: { model.setMode($0) })
+      )
+      .help("\(model.mode.label). \(model.mode.explanation)")
 
       Button {
         model.setPaused(!model.paused)
       } label: {
         Image(systemName: model.paused ? "play.fill" : "pause.fill")
       }
+      .buttonStyle(GlassButtonStyle(kind: .icon))
       .help(model.paused ? "Resume watching" : "Pause watching")
     }
   }
 
   private var footer: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Divider()
       Text(model.statusLine)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      HStack {
+        .font(.system(size: 11))
+        .foregroundStyle(Glass.faint)
+        .padding(.horizontal, 2)
+      HStack(spacing: 2) {
         Button("All tasks") { WindowManager.shared.showTasks() }
         Button("Projects") { WindowManager.shared.showGraph() }
           .help("Projects, people, documents and topics Lifescroll has seen")
@@ -144,20 +153,24 @@ struct PopoverView: View {
           .disabled(model.ranked.count < 2)
           .help("Pick which of two tasks matters more")
         Spacer()
-        Button {
-          WindowManager.shared.showSettings()
-        } label: {
-          Image(systemName: "gearshape")
+        HStack(spacing: 6) {
+          Button {
+            WindowManager.shared.showSettings()
+          } label: {
+            Image(systemName: "gearshape.fill")
+          }
+          .help("Settings")
+          Button {
+            NSApp.terminate(nil)
+          } label: {
+            Image(systemName: "power")
+          }
+          .help("Quit Lifescroll")
         }
-        .help("Settings")
-        Button {
-          NSApp.terminate(nil)
-        } label: {
-          Image(systemName: "power")
-        }
-        .help("Quit Lifescroll")
+        .buttonStyle(GlassButtonStyle(kind: .icon))
       }
-      .controlSize(.small)
+      .buttonStyle(GlassButtonStyle(kind: .quiet))
+      .padding(.leading, -8)
     }
   }
 }
@@ -166,34 +179,60 @@ struct SetupBanner: View {
   @EnvironmentObject var model: AppModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: 8) {
       ForEach(model.setupIssues, id: \.self) { issue in
-        Label(issue, systemImage: "exclamationmark.triangle")
-          .font(.caption)
+        Label(issue, systemImage: "exclamationmark.triangle.fill")
+          .font(.system(size: 12))
+          .foregroundStyle(Glass.amber)
           .fixedSize(horizontal: false, vertical: true)
       }
       Button("Open Settings") { WindowManager.shared.showSettings() }
-        .controlSize(.small)
+        .buttonStyle(GlassButtonStyle(kind: .secondary, compact: true))
     }
-    .padding(10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+    .glassCard(tint: Glass.amber, padding: 12)
   }
 }
 
-struct Chip: View {
-  let text: String
-  var systemImage: String?
+/// The small line above a card's title: what kind of card it is, and where it sits in the feed.
+struct CardHeader: View {
+  @EnvironmentObject var model: AppModel
+  let label: String
+  var color: Color = Glass.soft
 
   var body: some View {
-    HStack(spacing: 4) {
-      if let systemImage { Image(systemName: systemImage) }
-      Text(text)
+    HStack {
+      Text(label)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(color)
+      Spacer()
+      if model.feed.count > 1 {
+        Text("\(model.cardIndex + 1) of \(model.feed.count)")
+          .font(.system(size: 11).monospacedDigit())
+          .foregroundStyle(Glass.faint)
+      }
     }
-    .font(.caption)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 3)
-    .background(.quaternary, in: Capsule())
+  }
+}
+
+struct CardText: View {
+  let title: String
+  let why: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title)
+        .font(.system(size: 18, weight: .semibold))
+        .tracking(-0.2)
+        .foregroundStyle(Glass.ink)
+        .fixedSize(horizontal: false, vertical: true)
+      if !why.isEmpty {
+        Text(why)
+          .font(.system(size: 13))
+          .lineSpacing(2)
+          .foregroundStyle(Glass.soft)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
   }
 }
 
@@ -206,32 +245,18 @@ struct TaskCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Text("UP NEXT")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(.secondary)
-        Spacer()
-        Text("\(model.cardIndex + 1) of \(model.feed.count)")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
+    let now = Date()
+    let due = Ranker.deadlineText(task.deadline, now: now)
+    VStack(alignment: .leading, spacing: 12) {
+      CardHeader(label: "Up next")
+      CardText(title: task.title, why: why)
 
-      Text(task.title)
-        .font(.title3.weight(.semibold))
-        .fixedSize(horizontal: false, vertical: true)
-
-      Text(why)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      HStack(spacing: 6) {
+      FlowLayout(spacing: 6) {
         if let project = model.projectName(for: task) {
-          Chip(text: project, systemImage: "folder")
+          Chip(text: project, systemImage: "folder.fill")
         }
-        if let due = Ranker.deadlineText(task.deadline, now: Date()) {
-          Chip(text: due, systemImage: "clock")
+        if let due {
+          Chip(text: due, systemImage: "clock.fill", color: due == "overdue" ? Glass.coral : Glass.soft)
         }
         if task.estMinutes > 0 { Chip(text: "~\(task.estMinutes) min") }
         if task.seenCount > 1 { Chip(text: "seen \(task.seenCount)×") }
@@ -241,11 +266,9 @@ struct TaskCard: View {
         Button {
           model.takeMeThere(task)
         } label: {
-          Label("Take me there", systemImage: "arrow.up.forward.app")
-            .frame(maxWidth: .infinity)
+          Label("Take me there", systemImage: "arrow.up.forward")
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
+        .buttonStyle(GlassButtonStyle(kind: .primary))
         .help(task.webURL?.host ?? task.sourceApp)
       }
 
@@ -258,10 +281,9 @@ struct TaskCard: View {
         Spacer()
         ScrollArrows()
       }
+      .buttonStyle(GlassButtonStyle(kind: .secondary))
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    .glassCard()
   }
 }
 
@@ -270,54 +292,40 @@ struct ScrollArrows: View {
   @EnvironmentObject var model: AppModel
 
   var body: some View {
-    Button {
-      model.scroll(by: -1)
-    } label: {
-      Image(systemName: "chevron.up")
+    HStack(spacing: 6) {
+      Button {
+        model.scroll(by: -1)
+      } label: {
+        Image(systemName: "chevron.up")
+      }
+      .keyboardShortcut(.upArrow, modifiers: [])
+      .help("Previous card")
+      Button {
+        model.scroll(by: 1)
+      } label: {
+        Image(systemName: "chevron.down")
+      }
+      .keyboardShortcut(.downArrow, modifiers: [])
+      .help("Next card. After the last one, the first comes back.")
     }
+    .buttonStyle(GlassButtonStyle(kind: .icon))
     .disabled(model.feed.count < 2)
-    .keyboardShortcut(.upArrow, modifiers: [])
-    .help("Previous card")
-    Button {
-      model.scroll(by: 1)
-    } label: {
-      Image(systemName: "chevron.down")
-    }
-    .disabled(model.feed.count < 2)
-    .keyboardShortcut(.downArrow, modifiers: [])
-    .help("Next card. After the last one, the first comes back.")
   }
 }
 
-/// A card for something to enjoy instead of something to do.
+/// A card for something to enjoy instead of something to do. The only place the app uses colour.
 struct SuggestionCard: View {
   @EnvironmentObject var model: AppModel
   let suggestion: Recommendation
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Text(suggestion.bucket == "explore" ? "SOMETHING DIFFERENT" : "YOU MIGHT LIKE")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(.purple)
-        Spacer()
-        Text("\(model.cardIndex + 1) of \(model.feed.count)")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
+    VStack(alignment: .leading, spacing: 12) {
+      CardHeader(
+        label: suggestion.bucket == "explore" ? "Something different" : "You might like",
+        color: Glass.blushRose)
+      CardText(title: suggestion.title, why: suggestion.why)
 
-      Text(suggestion.title)
-        .font(.title3.weight(.semibold))
-        .fixedSize(horizontal: false, vertical: true)
-
-      if !suggestion.why.isEmpty {
-        Text(suggestion.why)
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      HStack(spacing: 6) {
+      FlowLayout(spacing: 6) {
         Chip(text: suggestion.kind, systemImage: suggestion.icon)
         Chip(text: suggestion.webURL?.host ?? suggestion.source)
         if suggestion.estMinutes > 0 { Chip(text: "~\(suggestion.estMinutes) min") }
@@ -326,24 +334,20 @@ struct SuggestionCard: View {
       Button {
         model.openSuggestion(suggestion)
       } label: {
-        Label("Open", systemImage: "arrow.up.forward.app")
-          .frame(maxWidth: .infinity)
+        Label("Open", systemImage: "arrow.up.forward")
       }
-      .buttonStyle(.borderedProminent)
-      .tint(.purple)
-      .controlSize(.large)
+      .buttonStyle(GlassButtonStyle(kind: .primary))
       .help(suggestion.url)
 
       HStack(spacing: 6) {
         Button("Not for me") { model.dismissSuggestion(suggestion) }
+          .buttonStyle(GlassButtonStyle(kind: .secondary))
           .help("Remove it and show fewer like it")
         Spacer()
         ScrollArrows()
       }
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    .glassCard(blush: true)
   }
 }
 
@@ -354,32 +358,18 @@ struct CompareCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        Text("WHICH MATTERS MORE RIGHT NOW?")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(.secondary)
+        Text("Which matters more right now?")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(Glass.ink)
         Spacer()
         Button("Skip") { model.skipComparison() }
-          .buttonStyle(.link)
-          .font(.caption)
+          .buttonStyle(GlassButtonStyle(kind: .quiet))
       }
-      option(pair.a, over: pair.b)
-      option(pair.b, over: pair.a)
+      Button(pair.a.title) { model.choose(winner: pair.a, loser: pair.b) }
+      Button(pair.b.title) { model.choose(winner: pair.b, loser: pair.a) }
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-  }
-
-  private func option(_ task: TaskItem, over other: TaskItem) -> some View {
-    Button {
-      model.choose(winner: task, loser: other)
-    } label: {
-      Text(task.title)
-        .multilineTextAlignment(.leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 4)
-    }
-    .controlSize(.large)
+    .buttonStyle(GlassButtonStyle(kind: .row))
+    .glassCard()
   }
 }
 
@@ -387,25 +377,49 @@ struct EmptyCard: View {
   @EnvironmentObject var model: AppModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("Nothing on your list yet")
-        .font(.title3.weight(.semibold))
-      Text(
-        model.lastSummary.isEmpty
-          ? "Lifescroll reads your screen every ten minutes. Tasks appear here once it has seen something you left unfinished."
-          : "Last seen: \(model.lastSummary)"
-      )
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    CardText(
+      title: "Nothing on your list yet",
+      why: model.lastSummary.isEmpty
+        ? "Lifescroll reads your screen every ten minutes. Tasks appear here once it has seen something you left unfinished."
+        : "Last seen: \(model.lastSummary)"
+    )
+    .glassCard()
   }
 }
 
 // MARK: - All tasks window
+
+/// The heading at the top of a window, standing in for the hidden title bar.
+struct WindowHeading<Trailing: View>: View {
+  let title: String
+  @ViewBuilder var trailing: () -> Trailing
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Text(title)
+        .font(.system(size: 20, weight: .semibold))
+        .tracking(-0.3)
+        .foregroundStyle(Glass.ink)
+      Spacer()
+      trailing()
+    }
+  }
+}
+
+/// A pill that is either on or off, for a single setting.
+struct GlassToggle: View {
+  let label: String
+  @Binding var isOn: Bool
+
+  var body: some View {
+    Button {
+      isOn.toggle()
+    } label: {
+      Label(label, systemImage: isOn ? "checkmark.circle.fill" : "circle")
+    }
+    .buttonStyle(GlassButtonStyle(kind: .secondary))
+  }
+}
 
 struct TaskListView: View {
   @EnvironmentObject var model: AppModel
@@ -431,54 +445,56 @@ struct TaskListView: View {
     // Reading `ranked` keeps this list in step with every change the model makes.
     let _ = model.ranked
     let tasks = model.tasks(for: filter)
-    VStack(spacing: 0) {
-      HStack {
-        Picker("Show", selection: $filter) {
-          ForEach(TaskStatus.allCases) { status in
-            Text(status.label).tag(status)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        Toggle("Group by project", isOn: $groupByProject)
-          .toggleStyle(.checkbox)
+    VStack(alignment: .leading, spacing: 14) {
+      WindowHeading(title: "Tasks") {
+        GlassToggle(label: "Group by project", isOn: $groupByProject)
+        GlassSegmented(options: TaskStatus.allCases.map { ($0, $0.label) }, selection: $filter)
+          .frame(width: 210)
       }
-      .padding(12)
 
       if tasks.isEmpty {
-        Spacer()
-        Text(filter == .open ? "No open tasks." : "Nothing here.")
-          .foregroundStyle(.secondary)
-        Spacer()
-      } else if groupByProject {
-        List {
-          ForEach(groups(tasks), id: \.name) { group in
-            Section(group.name) {
-              ForEach(group.rows, id: \.task.id) { row in
-                TaskRow(task: row.task, rank: filter == .open ? row.rank : nil)
+        VStack {
+          Spacer()
+          Text(filter == .open ? "No open tasks." : "Nothing here.")
+            .font(.system(size: 13))
+            .foregroundStyle(Glass.faint)
+            .frame(maxWidth: .infinity)
+          Spacer()
+        }
+      } else {
+        GlassScroll {
+          LazyVStack(alignment: .leading, spacing: 8) {
+            if groupByProject {
+              ForEach(groups(tasks), id: \.name) { group in
+                Text(group.name)
+                  .font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(Glass.soft)
+                  .padding(.top, 6)
+                  .padding(.leading, 4)
+                ForEach(group.rows, id: \.task.id) { row in
+                  TaskRow(task: row.task, rank: filter == .open ? row.rank : nil)
+                }
+              }
+            } else {
+              ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
+                TaskRow(task: task, rank: filter == .open ? index + 1 : nil)
               }
             }
           }
         }
-      } else {
-        List {
-          ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
-            TaskRow(task: task, rank: filter == .open ? index + 1 : nil)
-          }
-        }
       }
 
-      Divider()
-      HStack {
-        TextField("Add a task by hand", text: $newTitle)
-          .textFieldStyle(.roundedBorder)
-          .onSubmit(add)
+      HStack(spacing: 8) {
+        GlassField(prompt: "Add a task by hand", text: $newTitle, onSubmit: add)
         Button("Add", action: add)
+          .buttonStyle(GlassButtonStyle(kind: .primary))
+          .frame(width: 76)
           .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
       }
-      .padding(12)
     }
-    .frame(minWidth: 520, minHeight: 420)
+    .padding(18)
+    .frame(minWidth: 560, minHeight: 440)
+    .glassPanel()
   }
 
   private func add() {
@@ -498,47 +514,62 @@ struct TaskRow: View {
     // The same "why this, why now" line the card shows. Closed tasks only show one if the model wrote it.
     let why: String? =
       !task.why.isEmpty ? task.why : (task.status == .open ? Ranker.fallbackWhy(task, now: now) : nil)
-    HStack(alignment: .top, spacing: 10) {
+    let due = Ranker.deadlineText(task.deadline, now: now)
+    HStack(alignment: .top, spacing: 12) {
       if let rank {
         Text("\(rank)")
-          .font(.headline.monospacedDigit())
-          .foregroundStyle(.secondary)
-          .frame(width: 26, alignment: .trailing)
+          .font(.system(size: 15, weight: .semibold).monospacedDigit())
+          .foregroundStyle(Glass.faint)
+          .frame(width: 22, alignment: .trailing)
       }
-      VStack(alignment: .leading, spacing: 3) {
-        Text(task.title).font(.body.weight(.medium))
+      VStack(alignment: .leading, spacing: 5) {
+        Text(task.title)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(Glass.ink)
+          .fixedSize(horizontal: false, vertical: true)
         if let why {
-          Text(why).font(.callout)
+          Text(why)
+            .font(.system(size: 12))
+            .foregroundStyle(Glass.soft)
+            .fixedSize(horizontal: false, vertical: true)
         }
         if !task.detail.isEmpty {
-          Text(task.detail).font(.caption).foregroundStyle(.secondary)
+          Text(task.detail)
+            .font(.system(size: 11))
+            .foregroundStyle(Glass.faint)
+            .fixedSize(horizontal: false, vertical: true)
         }
-        HStack(spacing: 6) {
+        FlowLayout(spacing: 6) {
           if let project = model.projectName(for: task) {
-            Chip(text: project, systemImage: "folder")
+            Chip(text: project, systemImage: "folder.fill")
           }
-          if let due = Ranker.deadlineText(task.deadline, now: now) { Chip(text: due) }
+          if let due {
+            Chip(text: due, systemImage: "clock.fill", color: due == "overdue" ? Glass.coral : Glass.soft)
+          }
           if task.estMinutes > 0 { Chip(text: "~\(task.estMinutes) min") }
           if task.isSnoozed(at: now) { Chip(text: "hidden for now") }
           if task.origin == "manual" { Chip(text: "added by hand") }
           if task.status == .open {
-            Chip(text: String(format: "score %.0f", Ranker.score(task, now: now)))
+            Chip(text: String(format: "score %.0f", Ranker.score(task, now: now)), color: Glass.faint)
           }
         }
+        .padding(.top, 2)
       }
-      Spacer()
-      if task.status == .open {
-        if task.hasDestination {
-          Button("Open") { model.takeMeThere(task) }
+      Spacer(minLength: 8)
+      HStack(spacing: 6) {
+        if task.status == .open {
+          if task.hasDestination {
+            Button("Open") { model.takeMeThere(task) }
+          }
+          Button("Done") { model.markDone(task) }
+          Button("Never") { model.never(task) }
+        } else {
+          Button("Reopen") { model.reopen(task) }
         }
-        Button("Done") { model.markDone(task) }
-        Button("Never") { model.never(task) }
-      } else {
-        Button("Reopen") { model.reopen(task) }
       }
+      .buttonStyle(GlassButtonStyle(kind: .secondary, compact: true))
     }
-    .controlSize(.small)
-    .padding(.vertical, 4)
+    .glassCard(padding: 12)
     .opacity(task.isSnoozed(at: now) ? 0.55 : 1)
   }
 }
@@ -547,6 +578,8 @@ struct TaskRow: View {
 
 enum Relative {
   static func text(_ date: Date, now: Date = Date()) -> String {
+    // The formatter renders the last minute as "in 0s", which reads as a glitch.
+    if abs(now.timeIntervalSince(date)) < 60 { return "just now" }
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
     return formatter.localizedString(for: date, relativeTo: now)
@@ -562,60 +595,104 @@ enum Relative {
 struct GraphView: View {
   @EnvironmentObject var model: AppModel
   @State private var kind: EntityKind = .project
-  @State private var selection: String?
+  @State var selection: String?
 
   var body: some View {
     // Reading `ranked` refreshes this window whenever the model reloads.
     let _ = model.ranked
     let entities = model.entities(kind)
-    HStack(spacing: 0) {
-      VStack(spacing: 0) {
-        Picker("Kind", selection: $kind) {
-          ForEach(EntityKind.allCases) { kind in
-            Text(kind.plural).tag(kind)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .padding(10)
-
-        if entities.isEmpty {
-          Spacer()
-          Text("None seen yet.")
-            .foregroundStyle(.secondary)
-          Spacer()
-        } else {
-          List(entities, selection: $selection) { entity in
-            VStack(alignment: .leading, spacing: 2) {
-              Text(entity.name).font(.body.weight(.medium))
-              Text("seen \(entity.seenCount)× · \(Relative.text(entity.lastSeen))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 2)
-          }
-        }
+    VStack(alignment: .leading, spacing: 14) {
+      WindowHeading(title: "Projects and people") {
+        GlassSegmented(options: EntityKind.allCases.map { ($0, $0.plural) }, selection: $kind)
+          .frame(width: 400)
       }
-      .frame(width: 300)
 
-      Divider()
-
-      if let selection, let detail = model.detail(forEntity: selection) {
-        EntityDetailView(detail: detail) { self.selection = $0 }
-      } else {
-        VStack {
-          Spacer()
-          Text("Lifescroll indexes the projects, people, documents and topics it sees you working with. Pick one to see what it connects to.")
-            .multilineTextAlignment(.center)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: 320)
-          Spacer()
+      HStack(alignment: .top, spacing: 14) {
+        Group {
+          if entities.isEmpty {
+            VStack {
+              Spacer()
+              Text("None seen yet.")
+                .font(.system(size: 13))
+                .foregroundStyle(Glass.faint)
+                .frame(maxWidth: .infinity)
+              Spacer()
+            }
+          } else {
+            GlassScroll {
+              LazyVStack(spacing: 4) {
+                ForEach(entities) { entity in
+                  EntityListRow(entity: entity, selected: selection == entity.id) {
+                    selection = entity.id
+                  }
+                }
+              }
+            }
+          }
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: 260)
+
+        Group {
+          if let selection, let detail = model.detail(forEntity: selection) {
+            EntityDetailView(detail: detail) { self.selection = $0 }
+          } else {
+            VStack {
+              Spacer()
+              Text("Lifescroll keeps track of the projects, people, documents and topics it sees you working with. Pick one to see what it connects to.")
+                .font(.system(size: 13))
+                .lineSpacing(2)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Glass.faint)
+                .frame(maxWidth: 320)
+              Spacer()
+            }
+            .frame(maxWidth: .infinity)
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .glassCard(padding: 0)
       }
     }
-    .frame(minWidth: 760, minHeight: 480)
+    .padding(18)
+    .frame(minWidth: 780, minHeight: 500)
+    .glassPanel()
     .onChange(of: kind) { selection = nil }
+  }
+}
+
+struct EntityListRow: View {
+  let entity: Entity
+  let selected: Bool
+  let choose: () -> Void
+
+  var body: some View {
+    Button(action: choose) {
+      HStack(spacing: 10) {
+        Image(systemName: entity.kind.icon)
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(selected ? Glass.ink : Glass.soft)
+          .frame(width: 18)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(entity.name)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Glass.ink)
+            .lineLimit(1)
+          Text("\(entity.seenCount == 1 ? "Seen once" : "Seen \(entity.seenCount) times"), last \(Relative.text(entity.lastSeen))")
+            .font(.system(size: 11))
+            .foregroundStyle(Glass.faint)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .background(
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+          .fill(Color.white.opacity(selected ? 0.16 : 0.0001))
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 }
 
@@ -626,22 +703,26 @@ struct EntityDetailView: View {
 
   var body: some View {
     let entity = detail.entity
-    ScrollView {
-      VStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 4) {
+    GlassScroll {
+      VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 6) {
           Label(entity.name, systemImage: entity.kind.icon)
-            .font(.title2.weight(.semibold))
+            .font(.system(size: 20, weight: .semibold))
+            .tracking(-0.3)
+            .foregroundStyle(Glass.ink)
           if !entity.summary.isEmpty {
-            Text(entity.summary).foregroundStyle(.secondary)
+            Text(entity.summary)
+              .font(.system(size: 13))
+              .foregroundStyle(Glass.soft)
           }
           if !entity.aliases.isEmpty {
-            Text("Also seen as: \(entity.aliases.joined(separator: ", "))")
-              .font(.caption)
-              .foregroundStyle(.secondary)
+            Text("Also seen as \(entity.aliases.joined(separator: ", "))")
+              .font(.system(size: 11))
+              .foregroundStyle(Glass.faint)
           }
-          Text("First seen \(Relative.stamp(entity.firstSeen)) · seen in \(entity.seenCount) readings")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          Text("First seen \(Relative.stamp(entity.firstSeen)), in \(entity.seenCount) readings since")
+            .font(.system(size: 11))
+            .foregroundStyle(Glass.faint)
         }
 
         if !detail.tasks.isEmpty {
@@ -654,51 +735,57 @@ struct EntityDetailView: View {
 
         if !detail.links.isEmpty {
           section("Connected to") {
-            ForEach(detail.links) { link in
-              Button {
-                open(link.entity.id)
-              } label: {
-                HStack {
-                  Label(link.entity.name, systemImage: link.entity.kind.icon)
-                  Spacer()
-                  Text("together \(link.weight)×")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+              ForEach(detail.links) { link in
+                Button {
+                  open(link.entity.id)
+                } label: {
+                  HStack {
+                    Label(link.entity.name, systemImage: link.entity.kind.icon)
+                    Spacer()
+                    Text(link.weight == 1 ? "seen together once" : "seen together \(link.weight) times")
+                      .font(.system(size: 11))
+                      .foregroundStyle(Glass.faint)
+                  }
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(GlassButtonStyle(kind: .row))
               }
-              .buttonStyle(.plain)
             }
           }
         }
 
         if !detail.sightings.isEmpty {
           section("What you did with it") {
-            ForEach(Array(detail.sightings.enumerated()), id: \.offset) { _, sighting in
-              VStack(alignment: .leading, spacing: 1) {
-                Text(Relative.stamp(sighting.ts))
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                Text(sighting.context)
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(Array(detail.sightings.enumerated()), id: \.offset) { _, sighting in
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(Relative.stamp(sighting.ts))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Glass.faint)
+                  Text(sighting.context)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Glass.soft)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
               }
             }
           }
         }
 
-        Button("Remove from index", role: .destructive) { model.removeEntity(entity) }
-          .controlSize(.small)
+        Button("Remove from index") { model.removeEntity(entity) }
+          .buttonStyle(GlassButtonStyle(kind: .secondary, compact: true))
           .help("Hide this entry and stop tracking it")
       }
-      .padding(16)
+      .padding(18)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
   private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text(title.uppercased())
-        .font(.caption2.weight(.bold))
-        .foregroundStyle(.secondary)
+      Text(title)
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(Glass.soft)
       content()
     }
   }
@@ -711,11 +798,23 @@ struct SettingsView: View {
   @State private var keyDraft = ""
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      WindowHeading(title: "Settings") {}
+        .padding(.horizontal, 22)
+        .padding(.top, 18)
+      form
+    }
+    .frame(minWidth: 540, minHeight: 640)
+    .glassPanel()
+    .onAppear { model.refreshPermissions() }
+  }
+
+  private var form: some View {
     Form {
       Section("Claude API key") {
         if model.hasAPIKey {
           HStack {
-            Label("A key is saved in your Keychain.", systemImage: "checkmark.seal")
+            Label("A key is saved in your Keychain.", systemImage: "checkmark.seal.fill")
             Spacer()
             Button("Remove") { model.removeAPIKey() }
           }
@@ -727,9 +826,7 @@ struct SettingsView: View {
           }
           .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
         }
-        Text("Haiku 5.5 reads the screenshots. Sonnet 5.5 merges and ranks tasks and writes the cards.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        note("Haiku 5.5 reads your screen. Sonnet 5.5 merges and ranks tasks and writes the cards.")
       }
 
       Section("Permissions") {
@@ -741,9 +838,7 @@ struct SettingsView: View {
           "Accessibility (window titles)", granted: model.accessibilityPermission,
           pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         ) { ActivityMonitor.requestAccessibilityPermission() }
-        Text("After turning Screen Recording on, quit and reopen Lifescroll.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        note("After turning Screen Recording on, quit and reopen Lifescroll.")
       }
 
       Section("Nudges") {
@@ -752,17 +847,13 @@ struct SettingsView: View {
         }
         TextField("Counts as scrolling", text: $model.distractingKeywords, axis: .vertical)
           .lineLimit(2...4)
-        Text("Comma-separated words matched against the app name and window title.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        note("Comma-separated words matched against the app name and window title.")
       }
 
       Section("Privacy") {
         TextField("Never capture", text: $model.excludedKeywords, axis: .vertical)
           .lineLimit(2...4)
-        Text("Matching windows are cut out of every capture, and nothing is captured while one is in front. Screen text is read on this Mac, and things that look like keys or card numbers are masked. Claude is sent that text, plus a screenshot where a screen had little text. The text is erased once it has been read; screenshots are deleted after three days.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        note("Matching windows are cut out of every capture, and nothing is captured while one is in front. Screen text is read on this Mac, and things that look like keys or card numbers are masked. Claude is sent that text, plus a screenshot where a screen had little text. The text is erased once it has been read; screenshots are deleted after three days.")
         HStack {
           Button("Save word lists") { model.saveKeywords() }
           Button("Show data folder") {
@@ -773,36 +864,29 @@ struct SettingsView: View {
 
       Section("Suggestions") {
         let onHand = model.feed.filter { if case .suggestion = $0 { return true } else { return false } }.count
-        Text(
+        note(
           model.mode == .lockIn
             ? "Lock in mode shows tasks only."
-            : "\(onHand) in your feed. Sonnet turns what you watch and read into searches of arXiv and Hacker News, then picks the best few."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+            : "\(onHand) in your feed. Sonnet turns what you watch and read into searches of arXiv and Hacker News, then picks the best few.")
         HStack {
           Button(model.findingSuggestions ? "Looking…" : "Find suggestions now") {
             model.suggestionsTick(force: true)
           }
           .disabled(model.findingSuggestions || !model.hasAPIKey || model.mode == .lockIn)
-          Text(model.suggestionNote)
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          note(model.suggestionNote)
         }
-        Text("Searches use general subject words only, never names. Only those words leave your Mac.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        note("Searches use general subject words only, never names. Only those words leave your Mac.")
       }
 
       Section("Today") {
         if model.usage.isEmpty {
-          Text("No Claude calls yet today.").foregroundStyle(.secondary)
+          note("No Claude calls yet today.")
         } else {
           ForEach(model.usage) { row in
             LabeledContent(
               row.model,
               value: String(
-                format: "%d in · %d out · $%.3f", row.inputTokens, row.outputTokens, row.cost))
+                format: "%d in, %d out, $%.3f", row.inputTokens, row.outputTokens, row.cost))
           }
           LabeledContent(
             "Estimated total",
@@ -813,15 +897,21 @@ struct SettingsView: View {
             model.analysisTick(force: true)
           }
           .disabled(model.analyzing || !model.hasAPIKey)
-          Text("\(model.pendingFrames) screenshots waiting")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          note("\(model.pendingFrames) screenshots waiting")
         }
       }
     }
     .formStyle(.grouped)
-    .frame(minWidth: 520, minHeight: 620)
-    .onAppear { model.refreshPermissions() }
+    // The form's own backing is dropped so the glass shows through behind its sections.
+    .scrollContentBackground(.hidden)
+    .buttonStyle(GlassButtonStyle(kind: .secondary))
+  }
+
+  private func note(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 11))
+      .foregroundStyle(Glass.soft)
+      .fixedSize(horizontal: false, vertical: true)
   }
 
   private func permissionRow(
@@ -829,7 +919,7 @@ struct SettingsView: View {
   ) -> some View {
     HStack {
       Label(name, systemImage: granted ? "checkmark.circle.fill" : "xmark.circle")
-        .foregroundStyle(granted ? .green : .secondary)
+        .foregroundStyle(granted ? Glass.mint : Glass.soft)
       Spacer()
       if !granted {
         Button("Ask") { request() }
@@ -850,19 +940,19 @@ final class WindowManager {
   private var windows: [String: NSWindow] = [:]
 
   func showTasks() {
-    show(id: "tasks", title: "Lifescroll Tasks", size: NSSize(width: 620, height: 520)) {
+    show(id: "tasks", title: "Lifescroll Tasks", size: NSSize(width: 640, height: 540)) {
       TaskListView()
     }
   }
 
   func showSettings() {
-    show(id: "settings", title: "Lifescroll Settings", size: NSSize(width: 560, height: 680)) {
+    show(id: "settings", title: "Lifescroll Settings", size: NSSize(width: 560, height: 700)) {
       SettingsView()
     }
   }
 
   func showGraph() {
-    show(id: "graph", title: "Lifescroll Projects & People", size: NSSize(width: 860, height: 560)) {
+    show(id: "graph", title: "Lifescroll Projects and People", size: NSSize(width: 880, height: 580)) {
       GraphView()
     }
   }
@@ -873,9 +963,17 @@ final class WindowManager {
     if windows[id] == nil {
       let window = NSWindow(
         contentRect: NSRect(origin: .zero, size: size),
-        styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered,
-        defer: false)
+        styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+        backing: .buffered, defer: false)
+      // The title still names the window in Mission Control and the Window menu; on screen the
+      // glass runs to the top edge and the view draws its own heading.
       window.title = title
+      window.titleVisibility = .hidden
+      window.titlebarAppearsTransparent = true
+      window.isOpaque = false
+      window.backgroundColor = .clear
+      window.appearance = NSAppearance(named: .darkAqua)
+      window.isMovableByWindowBackground = true
       window.isReleasedWhenClosed = false
       window.contentView = NSHostingView(rootView: content().environmentObject(AppModel.shared))
       window.center()
