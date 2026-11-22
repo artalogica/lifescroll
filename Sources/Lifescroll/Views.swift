@@ -294,11 +294,17 @@ struct TaskCard: View {
           Button("Not now") { model.notNow(task) }
             .help("Hide for three hours")
           Button("Never") { model.never(task) }
-            .help("Dismiss for good")
+            .help("A real task, but dismiss it for good")
           Spacer()
           ScrollArrows()
         }
         .buttonStyle(GlassButtonStyle(kind: .secondary))
+
+        Button("Not a task") { model.notATask(task) }
+          .buttonStyle(GlassButtonStyle(kind: .quiet))
+          .help("This never was a task. Removes it, and things like it stop being suggested.")
+          .padding(.leading, -8)
+          .padding(.top, -4)
       }
     }
     .glassCard()
@@ -338,6 +344,7 @@ struct TaskChips: View {
         if task.isInProgress { Chip(text: "in progress", systemImage: "play.fill", color: Glass.mint) }
         if task.isSnoozed(at: now) { Chip(text: "hidden for now") }
         if task.origin == "manual" { Chip(text: "added by hand") }
+        if task.notATask { Chip(text: "not a task", systemImage: "xmark") }
         if task.status == .open {
           Chip(text: String(format: "score %.0f", Ranker.score(task, now: now)), color: Glass.faint)
         }
@@ -424,11 +431,32 @@ struct CompareCard: View {
         Button("Skip") { model.skipComparison() }
           .buttonStyle(GlassButtonStyle(kind: .quiet))
       }
-      Button(pair.a.title) { model.choose(winner: pair.a, loser: pair.b) }
-      Button(pair.b.title) { model.choose(winner: pair.b, loser: pair.a) }
+      choice(pair.a, over: pair.b)
+      choice(pair.b, over: pair.a)
+      Text("Use the × beside one that is not a task at all.")
+        .font(.system(size: 11))
+        .foregroundStyle(Glass.faint)
     }
-    .buttonStyle(GlassButtonStyle(kind: .row))
     .glassCard()
+  }
+}
+
+extension CompareCard {
+  /// One side of the question: the task as a button to pick it, and beside it a way to say it
+  /// should not have been on the list in the first place.
+  fileprivate func choice(_ task: TaskItem, over other: TaskItem) -> some View {
+    HStack(spacing: 6) {
+      Button(task.title) { model.choose(winner: task, loser: other) }
+        .buttonStyle(GlassButtonStyle(kind: .row))
+      Button {
+        model.notATask(task)
+      } label: {
+        Image(systemName: "xmark")
+      }
+      .buttonStyle(GlassButtonStyle(kind: .icon))
+      .help("Not a task. Removes it, and things like it stop being suggested.")
+      .accessibilityLabel("\(task.title) is not a task")
+    }
   }
 }
 
@@ -588,6 +616,8 @@ struct TaskRow: View {
         Button("Start") { model.start(task) }
         Button("Done") { model.markDone(task) }
         Button("Never") { model.never(task) }
+        Button("Not a task") { model.notATask(task) }
+          .help("This never was a task. Things like it stop being suggested.")
       } else {
         Button("Reopen") { model.reopen(task) }
       }

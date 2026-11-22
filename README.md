@@ -107,6 +107,11 @@ others. Starting, pausing and finishing are all recorded in the `events` table.
 The card feed is a loop. Scroll with the trackpad, mouse wheel or arrow keys; after the last card the
 first one comes back. Done and Never take a card out of the loop, and Not now hides it for three hours.
 
+Sometimes a card is not a task at all. **Not a task**, under the card's buttons, beside each choice
+of a "which matters more" question, and in All tasks, removes it and keeps it as an example. Those
+examples go to Sonnet with every merge, so the same thing, and things of the same kind, stop being
+added. Reopening one from All tasks takes the mark back.
+
 The index is a small knowledge graph of projects, people, documents and topics. Two entries are
 linked only when Haiku reports that a screen showed them to be related, with what it saw as
 evidence: a person posting in a project's channel, a paper about a topic. Being on screen in the

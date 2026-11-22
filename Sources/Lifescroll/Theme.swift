@@ -125,7 +125,10 @@ private struct GlassCard: ViewModifier {
         shape.strokeBorder(
           LinearGradient(
             colors: [Color.white.opacity(0.18), Color.white.opacity(0.04)], startPoint: .top,
-            endPoint: .bottom), lineWidth: 1)
+            endPoint: .bottom), lineWidth: 1
+        )
+        // Decoration only: it must never take a click meant for what is inside the card.
+        .allowsHitTesting(false)
       }
   }
 }
@@ -371,6 +374,7 @@ struct GlassField: View {
   let prompt: String
   @Binding var text: String
   var onSubmit: () -> Void = {}
+  @FocusState private var focused: Bool
 
   var body: some View {
     Group {
@@ -384,13 +388,18 @@ struct GlassField: View {
         )
         .textFieldStyle(.plain)
         .foregroundStyle(Glass.ink)
+        .focused($focused)
         .onSubmit(onSubmit)
       }
     }
     .font(.system(size: 13))
     .padding(.horizontal, 14)
     .frame(height: 34)
-    .background(Capsule().fill(Color.black.opacity(0.28)))
-    .overlay(Capsule().strokeBorder(Glass.hairline))
+    // The text itself is only a line tall inside the pill. A click anywhere else on the pill
+    // lands here and starts typing all the same.
+    .background(Capsule().fill(Color.black.opacity(0.28)).onTapGesture { focused = true })
+    // The outline is decoration. Left able to take clicks, it sat over the text and took every
+    // one of them, so the field could never be clicked into.
+    .overlay(Capsule().strokeBorder(Glass.hairline).allowsHitTesting(false))
   }
 }

@@ -505,10 +505,24 @@ final class AppModel: ObservableObject {
     update(task) { $0.status = .dismissed }
   }
 
+  /// "This never was a task." Takes it off the list for good, like Never, and also keeps it as an
+  /// example so that things like it stop being suggested.
+  func notATask(_ task: TaskItem) {
+    store.logEvent("not_a_task", taskID: task.id, context: context(for: task))
+    // A comparison that includes it is no longer worth answering.
+    if let pair = comparePair, pair.a.id == task.id || pair.b.id == task.id { comparePair = nil }
+    update(task) {
+      $0.status = .dismissed
+      $0.notATask = true
+      $0.startedAt = nil
+    }
+  }
+
   func reopen(_ task: TaskItem) {
     store.logEvent("reopened", taskID: task.id)
     update(task) {
       $0.status = .open
+      $0.notATask = false
       $0.snoozeUntil = nil
       // A reopened task goes back among the others; it is not under way until started again.
       $0.startedAt = nil

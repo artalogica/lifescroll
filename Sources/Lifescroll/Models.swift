@@ -40,6 +40,9 @@ struct TaskItem: Identifiable, Equatable {
   var projectID: String = ""
   /// When the user pressed Start. Nil until then, and again after Pause or Not now.
   var startedAt: Date? = nil
+  /// The user said this never was a task. It is dismissed, and kept as an example of what not to
+  /// suggest again.
+  var notATask: Bool = false
 
   /// Open, and the user has said they are working on it.
   var isInProgress: Bool { status == .open && startedAt != nil }

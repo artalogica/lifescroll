@@ -58,6 +58,7 @@ final class Store: @unchecked Sendable {
     try addColumnIfMissing("observations", "entities_done", "INTEGER DEFAULT 0")
     try addColumnIfMissing("frames", "text", "TEXT")
     try addColumnIfMissing("tasks", "started_at", "REAL")
+    try addColumnIfMissing("tasks", "not_task", "INTEGER DEFAULT 0")
     try addColumnIfMissing("entity_links", "how", "TEXT DEFAULT ''")
     try addColumnIfMissing("entity_links", "evidence", "TEXT DEFAULT ''")
     try addColumnIfMissing("entity_links", "last_observation", "INTEGER DEFAULT 0")
@@ -108,7 +109,8 @@ final class Store: @unchecked Sendable {
       seenCount: row.int("seen_count"),
       status: TaskStatus(rawValue: row.string("status")) ?? .open,
       snoozeUntil: row.date("snooze_until"), origin: row.string("origin"),
-      projectID: row.string("project_id"), startedAt: row.date("started_at"))
+      projectID: row.string("project_id"), startedAt: row.date("started_at"),
+      notATask: row.int("not_task") != 0)
   }
 
   func tasks(projectID: String) -> [TaskItem] {
@@ -136,13 +138,21 @@ final class Store: @unchecked Sendable {
     return (rows ?? []).map(task(from:))
   }
 
+  /// What the user has marked as never having been a task, newest first. Unlike other closed
+  /// tasks these are kept as examples however old they are.
+  func notTasks(limit: Int = 30) -> [TaskItem] {
+    let rows = try? db.query(
+      "SELECT * FROM tasks WHERE not_task = 1 ORDER BY last_seen DESC LIMIT ?", [.int(Int64(limit))])
+    return (rows ?? []).map(task(from:))
+  }
+
   func save(_ task: TaskItem) {
     _ = try? db.execute(
       """
       INSERT INTO tasks (id, title, detail, why, url, source_app, bundle_id, deadline,
         waiting_person, importance, rating, est_minutes, first_seen, last_seen, seen_count,
-        status, snooze_until, origin, project_id, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status, snooze_until, origin, project_id, started_at, not_task)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET title = excluded.title, detail = excluded.detail,
         why = excluded.why, url = excluded.url, source_app = excluded.source_app,
         bundle_id = excluded.bundle_id, deadline = excluded.deadline,
@@ -150,7 +160,8 @@ final class Store: @unchecked Sendable {
         rating = excluded.rating, est_minutes = excluded.est_minutes,
         last_seen = excluded.last_seen, seen_count = excluded.seen_count,
         status = excluded.status, snooze_until = excluded.snooze_until,
-        project_id = excluded.project_id, started_at = excluded.started_at
+        project_id = excluded.project_id, started_at = excluded.started_at,
+        not_task = excluded.not_task
       """,
       [
         .text(task.id), .text(task.title), .text(task.detail), .text(task.why), .text(task.url),
@@ -158,7 +169,7 @@ final class Store: @unchecked Sendable {
         .text(task.waitingPerson), .double(task.importance), .double(task.rating),
         .int(Int64(task.estMinutes)), .date(task.firstSeen), .date(task.lastSeen),
         .int(Int64(task.seenCount)), .text(task.status.rawValue), .date(task.snoozeUntil),
-        .text(task.origin), .text(task.projectID), .date(task.startedAt),
+        .text(task.origin), .text(task.projectID), .date(task.startedAt), .bool(task.notATask),
       ])
   }
 

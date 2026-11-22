@@ -184,8 +184,8 @@ enum Prompts {
     saying what to do next. A smaller model has read their screen and reported commitments it saw and \
     things they finished. Decide how each report changes the list.
 
-    You receive the current time, the open tasks, tasks they recently finished or dismissed, the new \
-    commitments, and the completions.
+    You receive the current time, the open tasks, tasks they recently finished or dismissed, things \
+    they have said are not tasks, the new commitments, and the completions.
 
     For each new commitment choose one operation:
     - update: it is the same underlying task as an open one, even if worded differently or seen in a \
@@ -195,6 +195,13 @@ enum Prompts {
     - ignore: it matches something they already finished or dismissed (dismissed means they said \
     "never", so do not bring it back), it is not really theirs, it is too vague to act on, or it is \
     trivial.
+
+    not_tasks lists things that were put on the list before and that the user then marked as never \
+    having been a task at all. They are the best evidence there is of what this person does not count \
+    as a task. Ignore any commitment that is the same thing as one of them, and ignore commitments of \
+    the same kind: if they rejected "Read the thread in #general", other passive reading of chatter \
+    is not a task either. When unsure whether something is a task for this person, lean on these \
+    examples and ignore it. A wrongly added card costs them more than a missed one.
 
     For each completion that matches an open task, emit complete with that task's id. A completion \
     that matches nothing needs no operation.
@@ -452,9 +459,10 @@ actor Analyzer {
           "project": store.entity(id: task.projectID)?.name ?? "",
         ]
       },
-      "recently_closed_tasks": closed.map {
+      "recently_closed_tasks": closed.filter { !$0.notATask }.map {
         ["id": $0.id, "title": $0.title, "status": $0.status == .done ? "finished" : "dismissed"]
       },
+      "not_tasks": store.notTasks().map { ["title": $0.title, "detail": $0.detail] },
       "commitments": commitments.map { item -> [String: Any] in
         [
           "title": item.title, "detail": item.detail, "evidence": item.evidence,

@@ -41,6 +41,8 @@ enum SelfTest {
     livingGraph()
     graphPointer()
     graphWindow()
+    addingByHand()
+    notATask()
     print(failures == 0 ? "PASS  \(passes) checks" : "FAILED  \(failures) of \(passes + failures) checks")
     return failures == 0
   }
@@ -1075,6 +1077,81 @@ enum SelfTest {
       settle()
       check(midway && seen.links.count == 1 && seen.links.first?.0 == "a" && seen.links.first?.1 == "c", "window: a mouse drag from the plus onto another dot links the two")
       window.close()
+    }
+  }
+
+  /// The reported fault: nothing could be added from the Projects window. The outline drawn over
+  /// the text field was taking every click, so the field could never be typed into.
+  private static func addingByHand() {
+    MainActor.assumeIsolated {
+      _ = NSApplication.shared
+      guard let store = try? Store.inMemory() else { return }
+      let model = AppModel(store: store)
+      model.reload()
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      let host = NSHostingView(
+        rootView: GraphView().ignoresSafeArea(.container, edges: .top).environmentObject(model))
+      window.contentView = host
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+      func fields(in view: NSView) -> [NSTextField] {
+        (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
+      }
+      guard let field = fields(in: host).first else {
+        check(false, "adding: the Projects window has a field to type a name into")
+        return
+      }
+      let centre = field.convert(CGPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+      check(host.hitTest(host.superview?.convert(centre, from: nil) ?? centre) === field, "adding: a click on the name field lands on the field, not on its outline")
+      check(window.makeFirstResponder(field) && field.currentEditor() != nil, "adding: the name field takes the keyboard")
+      field.currentEditor()?.insertText("Test project")
+      field.currentEditor()?.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+      let added = model.graph().entities
+      check(added.map(\.name) == ["Test project"] && added.first?.kind == .project, "adding: typing a name and pressing Return adds it to the graph")
+      check(model.addEntity(named: "Dana Reyes", kind: .person) != nil && model.graph().entities.contains { $0.name == "Dana Reyes" && $0.kind == .person }, "adding: a person can be added too")
+      window.close()
+    }
+  }
+
+  private static func notATask() {
+    let now = Date()
+    MainActor.assumeIsolated {
+      guard let store = try? Store.inMemory() else { return }
+      let model = AppModel(store: store)
+      let real = TaskItem(title: "Submit the checkpoint", firstSeen: now)
+      var chatter = TaskItem(title: "Read the thread in #general", detail: "People were chatting.", firstSeen: now)
+      chatter.startedAt = now
+      store.save(real)
+      store.save(chatter)
+      model.reload()
+      model.comparePair = ComparePair(a: real, b: chatter)
+      model.notATask(chatter)
+      let marked = store.task(id: chatter.id)
+      check(marked?.status == .dismissed && marked?.notATask == true && marked?.startedAt == nil, "not a task: marking one takes it off the list and remembers why")
+      check(model.comparePair == nil, "not a task: a which-matters-more question about it goes away")
+      check(model.ranked.map(\.id) == [real.id] && store.notTasks().map(\.id) == [chatter.id], "not a task: the rest of the list is untouched")
+
+      let analyzer = Analyzer(store: store)
+      guard let extraction = try? JSONCoding.decoder.decode(Extraction.self, from: Data(extractionFixture.utf8))
+      else { return check(false, "not a task: fixtures load") }
+      let input = analyzer.mergeInput(extraction, now: now) ?? ""
+      let closedPart = input.components(separatedBy: "\"recently_closed_tasks\"").last ?? ""
+      check(input.contains("\"not_tasks\"") && input.contains("Read the thread in #general") && !closedPart.contains("Read the thread in #general"), "not a task: the model is shown it as an example of what not to suggest")
+      check(Prompts.merge.contains("not_tasks"), "not a task: the model is told what those examples mean")
+
+      model.reopen(marked ?? chatter)
+      check(store.task(id: chatter.id)?.notATask == false && store.notTasks().isEmpty, "not a task: reopening one takes the mark back")
+    }
+    // An old database gains the column without losing anything.
+    if let store = try? Store.inMemory() {
+      var old = TaskItem(title: "Kept", firstSeen: now)
+      old.status = .dismissed
+      store.save(old)
+      check((try? store.migrate()) != nil && store.task(id: old.id)?.notATask == false && store.notTasks().isEmpty, "not a task: a task dismissed with Never is not treated as one")
     }
   }
 

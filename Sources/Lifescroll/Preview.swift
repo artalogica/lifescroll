@@ -245,6 +245,11 @@ enum UIPreview {
     model.cardIndex = 0
     shot("popover-task-light.png", light: true, size: popoverStage) { PopoverView() }
     shot("popover-task-dark.png", light: false, size: popoverStage) { PopoverView() }
+    if model.ranked.count > 1 {
+      model.comparePair = ComparePair(a: model.ranked[0], b: model.ranked[1])
+      shot("popover-compare-dark.png", light: false, size: popoverStage) { PopoverView() }
+      model.comparePair = nil
+    }
 
     if let index = model.feed.firstIndex(where: { if case .suggestion = $0 { return true } else { return false } }) {
       model.cardIndex = index
