@@ -6,12 +6,35 @@ import SwiftUI
 // Colour is spent in one place only: the blush on suggestion cards.
 
 enum Glass {
-  static let ink = Color.white.opacity(0.96)
-  static let soft = Color.white.opacity(0.68)
-  static let faint = Color.white.opacity(0.44)
+  // The three text strengths and the pane tint are kept as numbers too, so the self-test can
+  // check every one of them stays readable over a pure white backdrop (see `contrast`).
+  static let inkOpacity = 0.96
+  static let softOpacity = 0.80
+  static let faintOpacity = 0.62
+  static let smokeLevel = 0.09
+  static let paneOpacity = 0.80
 
-  /// The tint laid over the blur. Dark enough that white text passes over a pure white backdrop.
+  static let ink = Color.white.opacity(inkOpacity)
+  static let soft = Color.white.opacity(softOpacity)
+  static let faint = Color.white.opacity(faintOpacity)
+
+  /// The tint laid over the blur.
   static let smoke = Color(red: 0.085, green: 0.085, blue: 0.095)
+
+  /// The contrast ratio (as WCAG measures it) of white text at `textOpacity` on the pane, when what
+  /// lies behind the glass has the given brightness, 0 for black to 1 for white. The system blur
+  /// darkens the backdrop further, so the real figure is a little better than this.
+  static func contrast(textOpacity: Double, backdrop: Double) -> Double {
+    func luminance(_ level: Double) -> Double {
+      level <= 0.03928 ? level / 12.92 : pow((level + 0.055) / 1.055, 2.4)
+    }
+    let pane = paneOpacity * smokeLevel + (1 - paneOpacity) * backdrop
+    let text = textOpacity + (1 - textOpacity) * pane
+    return (luminance(text) + 0.05) / (luminance(pane) + 0.05)
+  }
+
+  /// Room left at the top of a window for the close, minimise and zoom buttons.
+  static let titleBarHeight: CGFloat = 28
   /// Inset cards sit darker than the panel, like wells cut into the glass.
   static let well = Color.black.opacity(0.26)
   static let hairline = Color.white.opacity(0.10)
@@ -64,7 +87,7 @@ private struct GlassPanel: ViewModifier {
       .background {
         ZStack {
           if !preview { BehindWindowBlur() }
-          Glass.smoke.opacity(0.66)
+          Glass.smoke.opacity(Glass.paneOpacity)
           // A faint sheen from the top-left corner, the way light catches a pane.
           LinearGradient(
             colors: [Color.white.opacity(0.10), Color.white.opacity(0)], startPoint: .topLeading,
@@ -92,7 +115,7 @@ private struct GlassCard: ViewModifier {
           if blush {
             shape.fill(
               LinearGradient(
-                colors: [Glass.blushRose.opacity(0.30), Glass.blushPeach.opacity(0.10), .clear],
+                colors: [Glass.blushRose.opacity(0.24), Glass.blushPeach.opacity(0.08), .clear],
                 startPoint: .topLeading, endPoint: .bottomTrailing))
           }
           if let tint { shape.fill(tint.opacity(0.14)) }
@@ -135,9 +158,11 @@ struct GlassButtonStyle: ButtonStyle {
 
   var kind: Kind = .secondary
   var compact = false
+  /// Marks a button whose action cannot be undone. Only the secondary kind draws it.
+  var destructive = false
 
   func makeBody(configuration: Configuration) -> some View {
-    GlassButtonBody(configuration: configuration, kind: kind, compact: compact)
+    GlassButtonBody(configuration: configuration, kind: kind, compact: compact, destructive: destructive)
   }
 }
 
@@ -145,6 +170,7 @@ private struct GlassButtonBody: View {
   let configuration: ButtonStyle.Configuration
   let kind: GlassButtonStyle.Kind
   let compact: Bool
+  let destructive: Bool
   @Environment(\.isEnabled) private var enabled
   @State private var hovering = false
 
@@ -165,11 +191,12 @@ private struct GlassButtonBody: View {
       case .secondary:
         configuration.label
           .font(.system(size: compact ? 11 : 12, weight: .medium))
-          .foregroundStyle(Glass.ink)
+          .foregroundStyle(destructive ? Glass.coral : Glass.ink)
           .padding(.horizontal, compact ? 10 : 12)
           .frame(height: compact ? 24 : 28)
           .background(Capsule().fill(fill(rest: 0.10, hover: 0.16, pressed: 0.24)))
-          .overlay(Capsule().strokeBorder(Glass.hairline))
+          .overlay(
+            Capsule().strokeBorder(destructive ? Glass.coral.opacity(0.45) : Glass.hairline))
       case .quiet:
         configuration.label
           .font(.system(size: 12, weight: .medium))
@@ -211,6 +238,8 @@ private struct GlassButtonBody: View {
 struct GlassSegmented<Value: Hashable>: View {
   let options: [(value: Value, label: String)]
   @Binding var selection: Value
+  /// What the switch chooses, read out by VoiceOver before the options.
+  var label = ""
   @Namespace private var namespace
 
   var body: some View {
@@ -236,11 +265,16 @@ struct GlassSegmented<Value: Hashable>: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // These are drawn as plain buttons, so the chosen one has to be announced explicitly.
+        .accessibilityLabel(option.label)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
     }
     .padding(3)
     .background(Capsule().fill(Color.black.opacity(0.28)))
     .overlay(Capsule().strokeBorder(Glass.hairline))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(label)
   }
 }
 
@@ -309,6 +343,8 @@ struct FlowLayout: Layout {
 /// A scrolling column at run time. Scroll views cannot be drawn to an image, so previews get a plain stack.
 struct GlassScroll<Content: View>: View {
   @Environment(\.renderingPreview) private var preview
+  /// The id of a row to keep in view, for lists driven from the keyboard.
+  var following: String? = nil
   @ViewBuilder let content: () -> Content
 
   var body: some View {
@@ -318,8 +354,13 @@ struct GlassScroll<Content: View>: View {
         .overlay(alignment: .top) { content() }
         .clipped()
     } else {
-      ScrollView { content() }
-        .scrollContentBackground(.hidden)
+      ScrollViewReader { proxy in
+        ScrollView { content() }
+          .scrollContentBackground(.hidden)
+          .onChange(of: following) { _, target in
+            if let target { proxy.scrollTo(target) }
+          }
+      }
     }
   }
 }

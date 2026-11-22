@@ -28,7 +28,23 @@ enum Ranker {
   static func ranked(_ tasks: [TaskItem], now: Date) -> [TaskItem] {
     tasks
       .filter { $0.status == .open && !$0.isSnoozed(at: now) }
-      .sorted { score($0, now: now) > score($1, now: now) }
+      .sorted { precedes($0, $1, now: now) }
+  }
+
+  /// The order tasks are shown in. Anything in progress comes first, whatever its score: the user
+  /// has said what they are doing, and that outranks every guess about what matters.
+  static func precedes(_ first: TaskItem, _ second: TaskItem, now: Date) -> Bool {
+    if first.isInProgress != second.isInProgress { return first.isInProgress }
+    return score(first, now: now) > score(second, now: now)
+  }
+
+  /// How long a task has been in progress, for its card.
+  static func elapsedText(since start: Date, now: Date) -> String {
+    let minutes = Int(max(now.timeIntervalSince(start), 0) / 60)
+    if minutes < 1 { return "just started" }
+    if minutes < 60 { return "\(minutes) min" }
+    let hours = minutes / 60
+    return minutes % 60 == 0 ? "\(hours) h" : "\(hours) h \(minutes % 60) min"
   }
 
   /// Standard Elo update for one "this matters more" pick.
@@ -52,6 +68,13 @@ enum Ranker {
       }
     }
     return best
+  }
+
+  /// Whether a deadline has passed. Views ask this, not the wording of `deadlineText`, to decide
+  /// how to colour a deadline.
+  static func isOverdue(_ deadline: Date?, now: Date) -> Bool {
+    guard let deadline else { return false }
+    return deadline <= now
   }
 
   static func deadlineText(_ deadline: Date?, now: Date) -> String? {
@@ -80,6 +103,20 @@ extension String {
   var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
+// MARK: - Lists driven from the keyboard
+
+enum ListNavigation {
+  /// The row an arrow key moves to. With nothing chosen, down picks the first row and up the last;
+  /// at either end the selection stays where it is.
+  static func move(from current: String?, in ids: [String], by step: Int) -> String? {
+    guard !ids.isEmpty else { return nil }
+    guard let current, let index = ids.firstIndex(of: current) else {
+      return step >= 0 ? ids.first : ids.last
+    }
+    return ids[min(max(index + step, 0), ids.count - 1)]
+  }
+}
+
 // MARK: - The feed
 
 enum Feed {
@@ -102,18 +139,22 @@ enum Feed {
   /// - Balanced: one suggestion after every three tasks, so suggestions stay the minority.
   /// - Pure dopamine: three suggestions, then a task, and everything left over after that.
   static func mix(tasks: [TaskItem], suggestions: [Recommendation], mode: Mode) -> [FeedItem] {
-    let taskItems = tasks.map(FeedItem.task)
+    // Whatever the mode, a task in progress opens the feed: it is what the user is in the middle of.
+    let underway = tasks.filter(\.isInProgress).map(FeedItem.task)
+    let waiting = tasks.filter { !$0.isInProgress }
+    let taskItems = waiting.map(FeedItem.task)
     let suggestionItems = suggestions.map(FeedItem.suggestion)
     switch mode {
     case .lockIn:
-      return taskItems
+      return underway + taskItems
     case .balanced:
       // With no tasks at all, a few suggestions keep the feed from being empty.
       let allowed =
-        tasks.isEmpty ? min(3, suggestions.count) : min(suggestions.count, max(1, (tasks.count + 2) / 3))
-      return interleave(taskItems, Array(suggestionItems.prefix(allowed)), every: 3)
+        tasks.isEmpty
+        ? min(3, suggestions.count) : min(suggestions.count, max(1, (tasks.count + 2) / 3))
+      return underway + interleave(taskItems, Array(suggestionItems.prefix(allowed)), every: 3)
     case .dopamine:
-      return interleave(suggestionItems, taskItems, every: 3)
+      return underway + interleave(suggestionItems, taskItems, every: 3)
     }
   }
 
@@ -405,24 +446,48 @@ enum EntityResolution {
     return tally
   }
 
-  /// Records which known entities one reading mentioned, and links those that appeared together.
+  /// Records which known entities one reading mentioned. Being seen in the same reading does not
+  /// connect two entries: that takes a stated relationship (see `recordRelations`).
   static func recordSightings(
     _ mentions: [Extraction.Mention], observationID: Int64, at date: Date, in store: Store
   ) {
-    var seenIDs: [String] = []
-    var anyNew = false
     for (kind, mention) in EntityMatching.distinct(mentions) {
       guard let entity = store.matchEntity(kind: kind, name: mention.name), !entity.ignored
       else { continue }
-      if store.addSighting(
+      store.addSighting(
         entityID: entity.id, observationID: observationID, ts: date, context: mention.context)
-      {
-        anyNew = true
-      }
-      seenIDs.append(entity.id)
     }
-    // Recording the same reading twice must not strengthen its links twice.
-    if anyNew { store.linkTogether(seenIDs, ts: date) }
+  }
+
+  /// Turns the relationships the reading model stated into links. Both ends must be entries in the
+  /// index, named among this reading's entities; anything else is dropped, not guessed at.
+  /// Returns how many links were made or strengthened.
+  @discardableResult
+  static func recordRelations(
+    _ relations: [Extraction.Relation], mentions: [Extraction.Mention], observationID: Int64,
+    at date: Date, in store: Store
+  ) -> Int {
+    // A relation names its ends as they were written; the mentions say what kind each one is.
+    var byName: [String: Entity] = [:]
+    for (kind, mention) in EntityMatching.distinct(mentions) {
+      if let entity = store.matchEntity(kind: kind, name: mention.name), !entity.ignored {
+        byName[EntityMatching.normalize(mention.name)] = entity
+      }
+    }
+    var made = 0
+    for relation in relations {
+      guard let first = byName[EntityMatching.normalize(relation.from)],
+        let second = byName[EntityMatching.normalize(relation.to)],
+        !relation.evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else { continue }
+      if store.link(
+        first.id, second.id, how: relation.how, evidence: relation.evidence,
+        observationID: observationID, ts: date)
+      {
+        made += 1
+      }
+    }
+    return made
   }
 }
 

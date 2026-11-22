@@ -50,6 +50,13 @@ enum Schema {
         "kind": choice(["project", "person", "document", "topic"], "What kind of thing it is."),
         "context": string("One sentence on what the user was doing with it in this period."),
       ])),
+    "relations": array(
+      object([
+        "from": string("One entity, named exactly as in entities."),
+        "to": string("The other entity, named exactly as in entities."),
+        "how": string("How they are related, in two to four words, such as 'works on' or 'is about'."),
+        "evidence": string("What on screen shows the relationship, quoted or described briefly."),
+      ])),
     "completions": array(
       object([
         "description": string("What the user visibly finished."),
@@ -139,6 +146,12 @@ enum Prompts {
     were studying or reading about. Use each name as written on screen. Leave out the apps and \
     websites themselves, and people who only appear as authors or presenters of content. When a \
     commitment belongs to one of the projects, put that project's name in the commitment's project field.
+
+    relations: pairs of those entities that the screen itself shows to be related. Examples: a person \
+    posting in a project's channel, a document inside a project's folder or repository, a paper that \
+    is about a topic, an assignment that belongs to a course. Being on screen in the same ten minutes \
+    is not a relationship: the user often does unrelated things side by side. Only report a pair when \
+    you can say what on screen connects them, and leave the list empty when nothing does.
 
     Never copy passwords, card numbers, keys or one-time codes into any field.
     """
@@ -413,6 +426,9 @@ actor Analyzer {
       EntityResolution.apply(result.decisions, asked: unknown, to: store, now: date)
     }
     EntityResolution.recordSightings(mentions, observationID: observationID, at: date, in: store)
+    EntityResolution.recordRelations(
+      extraction.relations ?? [], mentions: mentions, observationID: observationID, at: date,
+      in: store)
   }
 
   // MARK: Tasks

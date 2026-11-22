@@ -28,8 +28,9 @@ enum Entry {
         exit(1)
       }
     }
+    #if DEBUG
     // `--render-ui <folder>` draws the interface to PNG files with sample data, over a light and a
-    // dark backdrop. It opens no real data and makes no network calls.
+    // dark backdrop. It opens no real data and makes no network calls. Debug builds only.
     if let flag = CommandLine.arguments.firstIndex(of: "--render-ui"),
       CommandLine.arguments.indices.contains(flag + 1)
     {
@@ -41,6 +42,7 @@ enum Entry {
       for name in written { print(name) }
       exit(written.isEmpty ? 1 : 0)
     }
+    #endif
     // `--ocr-test [count]` reads the text off the newest stored screenshots and reports timing and size.
     // It prints numbers only, never the text itself, and makes no network calls.
     if let flag = CommandLine.arguments.firstIndex(of: "--ocr-test") {

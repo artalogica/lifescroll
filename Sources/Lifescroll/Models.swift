@@ -38,6 +38,11 @@ struct TaskItem: Identifiable, Equatable {
   var origin: String = "inferred"
   /// Id of the project entity this task belongs to, or empty.
   var projectID: String = ""
+  /// When the user pressed Start. Nil until then, and again after Pause or Not now.
+  var startedAt: Date? = nil
+
+  /// Open, and the user has said they are working on it.
+  var isInProgress: Bool { status == .open && startedAt != nil }
 
   /// Only http and https links are ever opened; the link text comes from a model reading the screen.
   var webURL: URL? {
@@ -188,6 +193,17 @@ struct Extraction: Codable, Equatable {
   /// Optional for the same reason as `Commitment.project`.
   var entities: [Mention]?
 
+  /// A relationship the screen itself showed, such as a person working on a project.
+  struct Relation: Codable, Equatable {
+    var from: String
+    var to: String
+    var how: String
+    var evidence: String
+  }
+
+  /// Optional for the same reason as `entities`.
+  var relations: [Relation]?
+
   /// What is worth sending to the merging model.
   var actionableCommitments: [Commitment] {
     commitments.filter { $0.isUsersOwn && $0.confidence != "low" }
@@ -262,9 +278,19 @@ struct EntitySighting: Equatable {
 
 struct EntityLink: Identifiable, Equatable {
   let entity: Entity
-  /// How many readings both appeared in.
+  /// How many readings stated this relationship.
   let weight: Int
+  /// How the two are related, in a few words, as last stated.
+  var how = ""
   var id: String { entity.id }
+}
+
+/// One edge of the graph: two entries and how they are related.
+struct GraphEdge: Equatable {
+  let a: String
+  let b: String
+  let weight: Int
+  let how: String
 }
 
 struct EntityDetail {

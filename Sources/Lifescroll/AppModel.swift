@@ -38,7 +38,12 @@ final class AppModel: ObservableObject {
   @Published var accessibilityPermission = false
   @Published var comparePair: ComparePair?
   @Published var usage: [UsageRow] = []
-  @Published var current = ActivitySample()
+  /// Not published: it changes every five seconds and no view shows it, so publishing it would
+  /// redraw every open window that often.
+  var current = ActivitySample()
+  /// The index and its links, refreshed by `reload()` so views do not query the database to draw.
+  @Published private(set) var graphEntities: [Entity] = []
+  @Published private(set) var graphEdges: [GraphEdge] = []
   @Published var analyzing = false
   @Published var pendingFrames = 0
   @Published var lastRead: Date?
@@ -61,6 +66,7 @@ final class AppModel: ObservableObject {
 
   /// The app uses `shared`, which opens the real database. A store can be passed in to build a model
   /// over sample data, which is how `--render-ui` draws the interface without touching real data.
+  /// Timers, notifications and windows all belong to the instance that `start()` is called on.
   init(store injected: Store? = nil) {
     let opened: Store
     if let injected {
@@ -92,6 +98,9 @@ final class AppModel: ObservableObject {
     refreshPermissions()
     reload()
     if !screenPermission { ScreenCapturer.requestPermission() }
+    // Notifications and windows report back to whichever model was started.
+    Notifier.shared.model = self
+    WindowManager.shared.model = self
     Notifier.shared.configure()
 
     schedule(every: Self.activityInterval) { $0.activityTick() }
@@ -103,9 +112,11 @@ final class AppModel: ObservableObject {
   }
 
   private func schedule(every interval: TimeInterval, _ action: @escaping @MainActor (AppModel) -> Void) {
-    // The model is a singleton that lives as long as the app, so the timers reach it through `shared`.
-    let timer = Timer(timeInterval: interval, repeats: true) { _ in
-      Task { @MainActor in action(AppModel.shared) }
+    // Each timer drives the model that scheduled it, and stops mattering if that model goes away.
+    let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        if let model = self { action(model) }
+      }
     }
     RunLoop.main.add(timer, forMode: .common)
     timers.append(timer)
@@ -174,7 +185,7 @@ final class AppModel: ObservableObject {
   private func activityTick() {
     tick += 1
     if tick % 6 == 0 { refreshPermissions() }
-    guard !paused, !ScreenCapturer.isScreenLocked,
+    guard !paused, !ScreenCapturer.isAway,
       var sample = ActivityMonitor.currentSample(),
       sample.bundleID != Bundle.main.bundleIdentifier
     else { return }
@@ -213,7 +224,7 @@ final class AppModel: ObservableObject {
   private func captureTick() {
     guard !capturing else { return }
     let excluded = Keywords.parse(excludedKeywords)
-    guard !paused, screenPermission, !ScreenCapturer.isScreenLocked, !currentHidden,
+    guard !paused, screenPermission, !ScreenCapturer.isAway, !currentHidden,
       !frontWindowIsPrivate(excluded)
     else {
       stillness.couldNotCheck()
@@ -310,10 +321,12 @@ final class AppModel: ObservableObject {
         suggestionNote = "Could not find suggestions: \(error)"
       } else {
         store.setValue("suggestions_last_success", String(now.timeIntervalSince1970))
-        suggestionNote =
+        let result =
           outcome.added > 0
           ? "Added \(outcome.added) from \(outcome.candidates) found."
           : (outcome.candidates > 0 ? "Found \(outcome.candidates), none worth showing." : "Nothing new found.")
+        // If the web search did not work, say so even though the older searches filled in.
+        suggestionNote = outcome.warning.map { "\(result) \($0)" } ?? result
       }
       reload()
     }
@@ -407,6 +420,8 @@ final class AppModel: ObservableObject {
     cardIndex = Feed.position(following: onScreen, in: feed, previous: cardIndex)
     usage = store.usage(on: now)
     pendingFrames = store.pendingFrameCount()
+    graphEntities = store.entities()
+    graphEdges = store.allLinks()
     projectNames = Dictionary(
       uniqueKeysWithValues: store.entities(kind: .project).map { ($0.id, $0.name) })
     if let observation = store.lastObservation() {
@@ -418,7 +433,7 @@ final class AppModel: ObservableObject {
   func tasks(for status: TaskStatus) -> [TaskItem] {
     guard status == .open else { return store.tasks(status: status) }
     let now = Date()
-    return store.tasks(status: .open).sorted { Ranker.score($0, now: now) > Ranker.score($1, now: now) }
+    return store.tasks(status: .open).sorted { Ranker.precedes($0, $1, now: now) }
   }
 
   private func context(for task: TaskItem? = nil) -> [String: String] {
@@ -458,7 +473,31 @@ final class AppModel: ObservableObject {
 
   func notNow(_ task: TaskItem) {
     store.logEvent("not_now", taskID: task.id, context: context(for: task))
-    update(task) { $0.snoozeUntil = Date().addingTimeInterval(Self.notNowSnooze) }
+    update(task) {
+      $0.snoozeUntil = Date().addingTimeInterval(Self.notNowSnooze)
+      $0.startedAt = nil
+    }
+  }
+
+  /// Marks a task as the thing being worked on, and opens it if it has somewhere to open.
+  /// A task in progress stays at the front of the feed until it is done or paused.
+  func start(_ task: TaskItem) {
+    store.logEvent("started", taskID: task.id, context: context(for: task))
+    update(task) {
+      $0.startedAt = Date()
+      $0.snoozeUntil = nil
+    }
+    if task.hasDestination { open(task) }
+  }
+
+  /// Puts a task in progress back among the others, keeping it on the list.
+  func pause(_ task: TaskItem) {
+    var details = context(for: task)
+    if let startedAt = task.startedAt {
+      details["minutes"] = String(Int(Date().timeIntervalSince(startedAt) / 60))
+    }
+    store.logEvent("paused", taskID: task.id, context: details)
+    update(task) { $0.startedAt = nil }
   }
 
   func never(_ task: TaskItem) {
@@ -471,6 +510,8 @@ final class AppModel: ObservableObject {
     update(task) {
       $0.status = .open
       $0.snoozeUntil = nil
+      // A reopened task goes back among the others; it is not under way until started again.
+      $0.startedAt = nil
     }
   }
 
@@ -494,6 +535,12 @@ final class AppModel: ObservableObject {
   @discardableResult
   func takeMeThere(_ task: TaskItem) -> Bool {
     store.logEvent("take_me_there", taskID: task.id, context: context(for: task))
+    return open(task)
+  }
+
+  /// Opens a task's link, or failing that the app it was seen in.
+  @discardableResult
+  private func open(_ task: TaskItem) -> Bool {
     if let url = task.webURL {
       return NSWorkspace.shared.open(url)
     }
@@ -512,6 +559,11 @@ final class AppModel: ObservableObject {
     task.projectID.isEmpty ? nil : projectNames[task.projectID]
   }
 
+  /// Everything in the index and every stated relationship, for the node graph.
+  func graph() -> (entities: [Entity], edges: [GraphEdge]) {
+    (graphEntities, graphEdges)
+  }
+
   func entities(_ kind: EntityKind) -> [Entity] {
     store.entities(kind: kind)
   }
@@ -524,6 +576,35 @@ final class AppModel: ObservableObject {
       tasks: entity.kind == .project
         ? store.tasks(projectID: id).sorted { Ranker.score($0, now: now) > Ranker.score($1, now: now) }
         : [])
+  }
+
+  /// Connects two entries by hand.
+  func link(_ first: String, _ second: String) {
+    guard store.linkByHand(first, second, ts: Date()) else { return }
+    store.logEvent("link_added", context: ["a": first, "b": second])
+    reload()
+  }
+
+  func unlink(_ first: String, _ second: String) {
+    store.removeLink(first, second)
+    store.logEvent("link_removed", context: ["a": first, "b": second])
+    reload()
+  }
+
+  /// Adds an entry by hand and returns its id. A name already in the index, under any of its
+  /// names, is reused; one that had been removed comes back.
+  @discardableResult
+  func addEntity(named name: String, kind: EntityKind) -> String? {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !EntityMatching.normalize(trimmed).isEmpty else { return nil }
+    let now = Date()
+    var entity = store.matchEntity(kind: kind, name: trimmed)
+      ?? Entity(kind: kind, name: trimmed, firstSeen: now, lastSeen: now)
+    entity.ignored = false
+    store.save(entity)
+    store.logEvent("entity_added", context: ["kind": kind.rawValue, "name": trimmed])
+    reload()
+    return entity.id
   }
 
   /// Hides an entry for good. It stays in the database marked ignored so it is not re-added.
@@ -588,7 +669,14 @@ final class AppModel: ObservableObject {
     switch action {
     case Notifier.Action.go, UNNotificationDefaultActionIdentifier:
       store.logEvent("nudge_go", taskID: taskID ?? "")
-      if let task { takeMeThere(task) }
+      // Going there from a nudge is starting it, unless it is already under way.
+      if let task {
+        if task.isInProgress {
+          takeMeThere(task)
+        } else {
+          start(task)
+        }
+      }
     case Notifier.Action.snooze:
       store.logEvent("nudge_snooze", taskID: taskID ?? "")
       tracker.mute(for: 10 * 60, now: now)
@@ -608,6 +696,8 @@ final class AppModel: ObservableObject {
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
   static let shared = Notifier()
   static let category = "LIFESCROLL_NUDGE"
+  /// The model that asked for notifications, and so the one their buttons report back to.
+  weak var model: AppModel?
 
   enum Action {
     static let go = "go"
@@ -661,6 +751,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
   ) async {
     let action = response.actionIdentifier
     let taskID = response.notification.request.content.userInfo["task"] as? String
-    await MainActor.run { AppModel.shared.handleNudge(action: action, taskID: taskID) }
+    await MainActor.run { self.model?.handleNudge(action: action, taskID: taskID) }
   }
 }

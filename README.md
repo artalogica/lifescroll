@@ -23,19 +23,50 @@ First run:
 3. Click the menu bar icon, open Settings (gear), and paste a Claude API key. It is saved in your Keychain.
 4. Optional: allow Accessibility in Settings for more reliable window titles.
 
-The build is ad-hoc signed, so macOS asks for these permissions and for Keychain access again after
-every rebuild. Signing with a real developer identity (full Xcode and a free Apple ID) stops that.
+### Keeping permissions across rebuilds
+
+macOS grants Screen Recording, Accessibility and Keychain access to one signed copy of an app.
+Without a signing certificate the build is signed ad-hoc, every rebuild counts as a new app, and
+System Settings goes on showing the old copy as allowed while the new one has nothing.
+
+Create a certificate once and the build script signs with it from then on:
+
+1. Open **Keychain Access**.
+2. In the menu bar choose **Keychain Access › Certificate Assistant › Create a Certificate…**
+3. Name it `Lifescroll Dev`, set Identity Type to **Self-Signed Root** and Certificate Type to
+   **Code Signing**, then create it.
+
+Then rebuild, clear the grants left by earlier builds, and allow the permissions one last time:
+
+```bash
+./scripts/build-app.sh
+```
+
+```bash
+tccutil reset ScreenCapture local.lifescroll.Lifescroll
+```
+
+```bash
+tccutil reset Accessibility local.lifescroll.Lifescroll
+```
+
+```bash
+open build/Lifescroll.app
+```
+
+The first signed build asks whether `codesign` may use the new key; choose Always Allow. The script
+prints which way it signed. To sign with a different identity, set `LIFESCROLL_SIGN_IDENTITY`.
 
 ## How it works
 
 | Loop | How often | What it does |
 |---|---|---|
-| Fast | every 5 s | Logs the front app and window title. Counts time on "scrolling" apps and fires the nudge. No model. |
+| Fast | every 5 s | Logs the front app and window title. Counts time on "scrolling" apps and fires the nudge. No model. Stops, along with capture, while the screen is locked or the display is off. |
 | Capture | every 10 s | Captures the display under the pointer, skipping unchanged frames and excluded apps, and stores a 1280-pixel copy. About every 30 s, and whenever a new window comes to the front, the text is read off the full-size capture on this Mac. |
 | Read | every 10 min | Claude Haiku 5.5 is sent the text of up to 12 key screens, each cut down to lines not already sent, and reports commitments, completions and content seen. A line counts as already sent only within the same window. |
 | Index | after each read | Projects, people, documents and topics Haiku named are matched against the index by name. Claude Sonnet 5.5 is called only for names it has not seen before. |
 | Merge | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project, and writes each card's "why now" line. |
-| Suggest | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 turns what you have been watching and reading into search queries. arXiv and Hacker News are searched directly, and Sonnet picks up to 8 results worth a card. |
+| Suggest | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 searches the web itself (up to 5 searches) for things like what you have been watching and reading, steered toward the sites you already use. The Hacker News front page is added for picks outside your interests, and Sonnet chooses up to 8 worth a card. If the web search finds nothing, it falls back to planned searches of arXiv and Hacker News. |
 
 Capture is text-first. Text recognition runs on-device (Apple's Vision framework, with language
 detection on), so Claude is sent words, not pictures, for most screens. The three screens with the
@@ -55,9 +86,10 @@ What is kept out and cleaned up:
   never instructions.
 
 Suggestions are the enjoyable half of the feed: a paper, an essay, a talk. Opening one or pressing
-"Not for me" removes it and is fed back into the next round of choosing. Search queries are general
-subject words only; Sonnet is told never to include names, and queries are stripped to plain words
-before they are sent. Links always come from the search results, never from the model's reply.
+"Not for me" removes it and is fed back into the next round of choosing. Sonnet is told never to
+search for your name or your private projects. Links always come from the search results, never
+from text the model wrote. Anthropic charges for each web search on top of tokens; Settings counts
+the searches but does not price them.
 
 Ranking is a hand-written score in `Logic.swift` (`Ranker.score`): importance, deadline urgency, how
 often and how long ago you saw it, whether someone is waiting, and your "which matters more?" picks.
@@ -67,13 +99,28 @@ The interface is dark smoked glass throughout: a blurred, dark-tinted pane with 
 reads the same over a white wallpaper as a dark one and in either system appearance. Colour is used
 in one place only, the blush on suggestion cards.
 
+Each task card has one main button. **Start** marks the task in progress and opens it, if it has a
+link or an app to open. A task in progress moves to the front of the feed in every mode, shows how
+long it has been going, and swaps its main button to **Done**; **Pause** puts it back among the
+others. Starting, pausing and finishing are all recorded in the `events` table.
+
 The card feed is a loop. Scroll with the trackpad, mouse wheel or arrow keys; after the last card the
 first one comes back. Done and Never take a card out of the loop, and Not now hides it for three hours.
 
-The index is a small knowledge graph: entries are projects, people, documents and topics, and two
-entries are linked each time they appear in the same ten-minute reading. The **Projects** button in
-the popover opens it. Each entry shows its open tasks, what it is connected to, and a dated log of
-what you did with it. "Remove from index" hides an entry and stops it being re-added.
+The index is a small knowledge graph of projects, people, documents and topics. Two entries are
+linked only when Haiku reports that a screen showed them to be related, with what it saw as
+evidence: a person posting in a project's channel, a paper about a topic. Being on screen in the
+same ten minutes links nothing. Stating a relationship again in a later reading strengthens it.
+
+The **Projects** button in the popover opens the index as a node graph. Related entries pull
+together into clusters and unrelated ones drift apart. The graph is a live simulation: it opens
+settled, and when something is added or linked the dots ease into their new places. Scroll with
+two fingers to pan, pinch or hold Command and scroll to zoom, and drag any dot to move it. Click a
+dot to see its tasks, what it is linked to and how, and a dated log of what you did with it.
+
+To link two entries, select one and drag the plus that appears beside it onto the other. Each link
+in the panel has a button to remove it. Entries can be added by hand from the row above the graph.
+A List view is one switch away. "Remove from index" hides an entry and stops it being re-added.
 
 Modes set both the nudge and the blend of the feed:
 
@@ -96,6 +143,7 @@ Modes set both the nudge and the blend of the feed:
 | `Sources/Lifescroll/Store.swift` | The SQLite schema and every query |
 | `Sources/Lifescroll/AppModel.swift` | Timers, card actions, notifications |
 | `Sources/Lifescroll/Views.swift` | Popover, task list, projects and settings |
+| `Sources/Lifescroll/Graph.swift` | The node graph: its layout and drawing |
 | `Sources/Lifescroll/Theme.swift` | The smoked-glass look: panels, cards, pill buttons, switches, chips |
 | `Sources/Lifescroll/Preview.swift` | Draws the interface to images with sample data |
 | `Sources/Lifescroll/SelfTest.swift` | Checks run by `--self-test` |
@@ -141,7 +189,6 @@ To time text recognition on your newest stored screenshots (it prints counts, ne
 
 ## Not built yet
 
-- Searching YouTube directly. Videos currently appear only when Hacker News links to one.
 - Tone matching for card text.
 - A learned ranker to replace the hand-written score.
 - Using the index for ranking (a task inheriting urgency from its project) and for reopening a whole project.

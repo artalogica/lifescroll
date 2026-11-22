@@ -193,6 +193,124 @@ struct ClaudeClient: Sendable {
     throw lastError
   }
 
+  // MARK: Web search
+
+  /// One page Claude's web search turned up.
+  struct WebResult: Equatable {
+    let url: String
+    let title: String
+  }
+
+  struct WebSearchOutcome: Equatable {
+    var results: [WebResult] = []
+    var inputTokens = 0
+    var outputTokens = 0
+    /// Searches Claude actually ran. Each is billed separately from tokens.
+    var searches = 0
+  }
+
+  /// A request that lets Claude search the web itself. The search runs on Anthropic's side; the
+  /// pages it finds come back as result blocks alongside whatever Claude writes.
+  static func webSearchBody(
+    model: String, system: String, messages: [[String: Any]], maxUses: Int
+  ) -> [String: Any] {
+    var body: [String: Any] = [
+      "model": model,
+      "max_tokens": 16000,
+      "system": system,
+      "messages": messages,
+      // The basic search tool returns every page found as a result block in the reply, which is
+      // what `webResults` reads. The newer variant filters results inside a code step, where they
+      // would not be visible here.
+      "tools": [["type": "web_search_20250305", "name": "web_search", "max_uses": maxUses]],
+      "output_config": ["effort": "low"],
+    ]
+    if usesFallback(model) { body["fallbacks"] = "default" }
+    return body
+  }
+
+  /// The pages found, read from the search result blocks. Links are taken from what the search
+  /// returned, never from text the model wrote. A failed search arrives as an error object where
+  /// the list would be, and is skipped.
+  static func webResults(in content: [[String: Any]]) -> [WebResult] {
+    var seen = Set<String>()
+    var results: [WebResult] = []
+    func add(_ url: String?, _ title: String?) {
+      guard let url, !url.isEmpty, seen.insert(url).inserted else { return }
+      results.append(WebResult(url: url, title: title ?? ""))
+    }
+    for block in content {
+      if block["type"] as? String == "web_search_tool_result",
+        let items = block["content"] as? [[String: Any]]
+      {
+        for item in items where item["type"] as? String == "web_search_result" {
+          add(item["url"] as? String, item["title"] as? String)
+        }
+      }
+      // Pages Claude cited in its answer carry the same link and title.
+      if block["type"] as? String == "text", let citations = block["citations"] as? [[String: Any]] {
+        for citation in citations { add(citation["url"] as? String, citation["title"] as? String) }
+      }
+    }
+    return results
+  }
+
+  /// Sends one request body, retrying rate limits and server errors, and returns the decoded reply.
+  private func post(_ body: [String: Any], model: String, apiKey: String) async throws -> [String: Any] {
+    let request = Self.request(
+      model: model, apiKey: apiKey, body: try JSONSerialization.data(withJSONObject: body))
+    var lastError: ClaudeError = .network("no attempt made")
+    for attempt in 0..<3 {
+      if attempt > 0 {
+        try await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(attempt)) * 2_000_000_000))
+      }
+      do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        if status == 200 { return object }
+        let message = (object["error"] as? [String: Any])?["message"] as? String ?? ""
+        lastError = .http(status, message)
+        if !Self.isRetryable(status) { throw lastError }
+      } catch let error as ClaudeError {
+        throw error
+      } catch {
+        lastError = .network(error.localizedDescription)
+      }
+    }
+    throw lastError
+  }
+
+  /// Asks Claude to search the web and returns the pages it found. A long search can pause partway
+  /// (`pause_turn`); it is resumed by sending the reply so far straight back.
+  func webSearch(model: String, system: String, prompt: String, maxUses: Int) async throws -> WebSearchOutcome {
+    guard let apiKey = keyProvider(), !apiKey.isEmpty else { throw ClaudeError.missingKey }
+    var messages: [[String: Any]] = [["role": "user", "content": prompt]]
+    var outcome = WebSearchOutcome()
+    for _ in 0..<4 {
+      let reply = try await post(
+        Self.webSearchBody(model: model, system: system, messages: messages, maxUses: maxUses),
+        model: model, apiKey: apiKey)
+      let content = reply["content"] as? [[String: Any]] ?? []
+      for result in Self.webResults(in: content) where !outcome.results.contains(result) {
+        outcome.results.append(result)
+      }
+      let usage = reply["usage"] as? [String: Any] ?? [:]
+      outcome.inputTokens += usage["input_tokens"] as? Int ?? 0
+      outcome.outputTokens += usage["output_tokens"] as? Int ?? 0
+      outcome.searches += (usage["server_tool_use"] as? [String: Any])?["web_search_requests"] as? Int ?? 0
+
+      let stopReason = reply["stop_reason"] as? String
+      if stopReason == "refusal" {
+        let category = (reply["stop_details"] as? [String: Any])?["category"] as? String
+        throw ClaudeError.refusal(category ?? "")
+      }
+      guard stopReason == "pause_turn" else { break }
+      messages.append(["role": "assistant", "content": content])
+    }
+    return outcome
+  }
+
   private static func errorFrom(data: Data, status: Int) -> ClaudeError {
     do {
       _ = try parse(data: data, status: status)

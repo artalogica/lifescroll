@@ -41,8 +41,25 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature. macOS ties Screen Recording, Accessibility and Keychain access to the signature,
-# so each rebuild asks for them again until the app is signed with a real developer identity.
-codesign --force --sign - "$APP"
+# macOS ties Screen Recording, Accessibility and Keychain access to the app's signature.
+#
+# Signed with a certificate, the signature is "this bundle id, signed by this certificate", which is
+# the same for every build, so permissions granted once keep working after a rebuild.
+# Signed ad-hoc, the signature is a hash of the binary, which changes on every build, so macOS
+# treats each rebuild as a new app and the permissions have to be granted again.
+#
+# The certificate is one you make yourself in Keychain Access (see the README). It is looked up by
+# name; set LIFESCROLL_SIGN_IDENTITY to use a different one, such as an Apple Development identity.
+IDENTITY="${LIFESCROLL_SIGN_IDENTITY:-Lifescroll Dev}"
+
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\""; then
+  codesign --force --sign "$IDENTITY" "$APP"
+  echo "Signed with \"$IDENTITY\". Permissions carry over between builds."
+else
+  codesign --force --sign - "$APP"
+  echo "No signing certificate named \"$IDENTITY\" found, so this build is signed ad-hoc."
+  echo "macOS will ask for Screen Recording, Accessibility and Keychain access again."
+  echo "To stop that, create the certificate once: see \"Keeping permissions across rebuilds\" in the README."
+fi
 
 echo "Built $APP"

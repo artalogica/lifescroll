@@ -146,6 +146,16 @@ enum CandidateSources {
     }
   }
 
+  /// Turns pages found by Claude's web search into candidates, named by the site they are on.
+  static func candidates(fromWeb results: [ClaudeClient.WebResult]) -> [Candidate] {
+    results.compactMap { result in
+      guard let host = URL(string: result.url)?.host, !result.title.isEmpty else { return nil }
+      return Candidate(
+        title: result.title, url: result.url,
+        source: host.hasPrefix("www.") ? String(host.dropFirst(4)) : host)
+    }
+  }
+
   static func key(forURL url: String) -> String {
     var key = url.lowercased()
     for prefix in ["https://", "http://", "www."] where key.hasPrefix(prefix) {
@@ -246,6 +256,24 @@ extension Prompts {
     could identify the user.
     """
 
+  static let webSearch = """
+    You find things for the suggestions in Lifescroll, a personal menu bar app. Alongside tasks, its \
+    feed shows the user things they would enjoy opening: a video, a thread, a project, an essay, a \
+    paper. You are given the subjects they have recently been watching and reading about, and the \
+    sites, channels and accounts those came from.
+
+    Search the web for things they would be glad to open. Look where they already spend time, and \
+    on the popular places for each interest: video sites, forums and discussion sites, code hosting, \
+    newsletters and blogs. Most searches should sit close to what they are into right now; one or \
+    two can be adjacent. Run several different searches so the results are not all from one site.
+
+    Your searches go to a public search engine. Public creators and publications they follow are \
+    fine to search for. Never search for the user's own name, or the name of a private project, \
+    course or company of theirs.
+
+    When you have searched, reply with a short list of the best few things you found.
+    """
+
   static let picks = """
     You choose the suggestions for Lifescroll's feed. This is the enjoyable half of the feed: things \
     the user would be glad they opened, not more homework. You are given what they have recently been \
@@ -271,11 +299,16 @@ struct SuggestionOutcome: Equatable {
   var candidates = 0
   var added = 0
   var error: String?
+  /// Something that went wrong without stopping the round, such as the web search failing while
+  /// the older searches still found things.
+  var warning: String?
 }
 
 actor Recommender {
   /// How many unopened suggestions to keep on hand.
   static let target = 8
+  /// The most web searches Claude may run in one round. Each search is billed on top of tokens.
+  static let maxWebSearches = 5
   /// arXiv asks automated clients to leave about three seconds between requests.
   static let arxivPause: UInt64 = 3_000_000_000
 
@@ -299,6 +332,38 @@ actor Recommender {
       "topics_worked_on": topics,
     ]
     return Self.json(payload)
+  }
+
+  /// What Claude is given to search from: the interests, and where they were seen.
+  /// Whether a name looks like a file, such as `hw7-solutions.tex`. Those are private by nature.
+  /// Site names such as `example.com` are not files.
+  nonisolated static func looksLikeFile(_ name: String) -> Bool {
+    guard !name.contains(" "),
+      let dot = name.lastIndex(of: "."), dot != name.startIndex
+    else { return false }
+    let ending = name[name.index(after: dot)...].lowercased()
+    guard (1...5).contains(ending.count), ending.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
+    return !["com", "org", "net", "io", "edu", "dev", "ai", "co", "app", "tv", "fm"].contains(ending)
+  }
+
+  /// What the web search step is told. Unlike the choosing step, this call can send what it is
+  /// given out to a search engine, so it gets subjects and public sources only: never the titles
+  /// of what the user had open, which can name private documents, and nothing that looks like a file.
+  nonisolated func webSearchPrompt(now: Date) -> String? {
+    let since = now.addingTimeInterval(-14 * 86_400)
+    var seen = Set<String>()
+    let subjects = (store.interestSignals(since: since).map(\.topic) + store.entities(kind: .topic, limit: 20).map(\.name))
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty && !Self.looksLikeFile($0) && seen.insert($0.lowercased()).inserted }
+    guard !subjects.isEmpty else { return nil }
+    let sources = store.usedSources(since: since).filter { !Self.looksLikeFile($0) }
+    return """
+      Subjects they have been watching and reading about, most recent first:
+      \(subjects.prefix(30).map { "- \($0)" }.joined(separator: "\n"))
+
+      Sites, channels and accounts those came from, most recent first:
+      \(sources.isEmpty ? "(none recorded yet)" : sources.map { "- \($0)" }.joined(separator: "\n"))
+      """
   }
 
   nonisolated func picksInput(candidates: [Candidate], interests: String?) -> String {
@@ -406,9 +471,33 @@ actor Recommender {
 
     do {
       let interests = interestsJSON(now: now)
+
+      // First choice: Claude searches the web itself, steered by where the user already spends time.
+      var web: [Candidate] = []
+      var webProblem: String?
+      if let prompt = webSearchPrompt(now: now) {
+        do {
+          let found = try await client.webSearch(
+            model: ClaudeClient.sonnet, system: Prompts.webSearch, prompt: prompt,
+            maxUses: Self.maxWebSearches)
+          store.addUsage(
+            model: ClaudeClient.sonnet, input: found.inputTokens, output: found.outputTokens, now: now)
+          store.addWebSearches(found.searches, now: now)
+          web = CandidateSources.candidates(fromWeb: found.results)
+          if web.isEmpty {
+            webProblem = "the search ran \(found.searches) times but returned no pages"
+          }
+        } catch ClaudeError.missingKey {
+          throw ClaudeError.missingKey
+        } catch {
+          webProblem = error.localizedDescription
+        }
+      }
+
+      // Only if that found nothing: the older route of planned searches on arXiv and Hacker News.
       var plan: SearchPlan?
       var planProblem: String?
-      if let interests {
+      if let interests, web.isEmpty {
         // A failed plan only loses the targeted searches; the front page still needs no plan.
         do {
           let response = try await client.complete(
@@ -426,14 +515,15 @@ actor Recommender {
       }
 
       let seen = store.seenContent()
+      // With no plan this fetches only the Hacker News front page, for picks outside their interests.
       let gathered = await gather(plan: plan, now: now)
       let candidates = CandidateSources.clean(
-        CandidateSources.reservingExplore(gathered.found), suggested: store.suggestedURLs(),
+        CandidateSources.reservingExplore(web + gathered.found), suggested: store.suggestedURLs(),
         seenURLs: seen.urls, seenTitles: seen.titles)
       outcome.candidates = candidates.count
       guard !candidates.isEmpty else {
         // Nothing at all came back: say why, if planning or a search failed.
-        outcome.error = planProblem ?? gathered.problems.first
+        outcome.error = webProblem ?? planProblem ?? gathered.problems.first
         return outcome
       }
 
@@ -445,6 +535,9 @@ actor Recommender {
         model: ClaudeClient.sonnet, input: response.inputTokens, output: response.outputTokens, now: now)
       let result = try JSONCoding.decoder.decode(PickResult.self, from: Data(response.text.utf8))
       outcome.added = Self.apply(result.picks, candidates: candidates, to: store, now: now, limit: room)
+      if let webProblem {
+        outcome.warning = "Web search did not work (\(webProblem)), so these came from arXiv and Hacker News."
+      }
     } catch {
       outcome.error = error.localizedDescription
     }

@@ -32,6 +32,12 @@ enum SelfTest {
     knowledgeGraph()
     suggestions()
     screenText()
+    interface()
+    inProgress()
+    display()
+    webSearch()
+    handMadeGraph()
+    livingGraph()
     print(failures == 0 ? "PASS  \(passes) checks" : "FAILED  \(failures) of \(passes + failures) checks")
     return failures == 0
   }
@@ -670,6 +676,196 @@ enum SelfTest {
     }
   }
 
+  private static func interface() {
+    // Found in review: every text strength must stay readable when the wallpaper behind the glass is white.
+    let overWhite = { (opacity: Double) in Glass.contrast(textOpacity: opacity, backdrop: 1) }
+    check(overWhite(Glass.faintOpacity) >= 4.5, "review: the faintest text clears 4.5:1 over a white backdrop")
+    check(overWhite(Glass.softOpacity) >= 4.5 && overWhite(Glass.inkOpacity) >= 7, "review: secondary and main text clear it with room to spare")
+    check(Glass.contrast(textOpacity: Glass.faintOpacity, backdrop: 0) > overWhite(Glass.faintOpacity), "review: a white backdrop is the hardest case, so it is the one checked")
+    check(Glass.contrast(textOpacity: 0.44, backdrop: 1) < 4.5, "review: the old faint text would have failed this check")
+
+    // Found in review: the overdue colour must not depend on the wording of the deadline label.
+    check(Ranker.isOverdue(now.addingTimeInterval(-1), now: now) && Ranker.isOverdue(now, now: now), "review: a passed deadline is overdue")
+    check(!Ranker.isOverdue(now.addingTimeInterval(60), now: now) && !Ranker.isOverdue(nil, now: now), "review: a future deadline, or none, is not")
+
+    // Found in review: arrow keys move through the Projects list again.
+    let ids = ["a", "b", "c"]
+    check(ListNavigation.move(from: "a", in: ids, by: 1) == "b" && ListNavigation.move(from: "b", in: ids, by: -1) == "a", "review: arrow keys move to the next and previous entry")
+    check(ListNavigation.move(from: "c", in: ids, by: 1) == "c" && ListNavigation.move(from: "a", in: ids, by: -1) == "a", "review: the selection stops at either end of the list")
+    check(ListNavigation.move(from: nil, in: ids, by: 1) == "a" && ListNavigation.move(from: nil, in: ids, by: -1) == "c", "review: with nothing chosen, down picks the first entry and up the last")
+    check(ListNavigation.move(from: "gone", in: ids, by: 1) == "a" && ListNavigation.move(from: "a", in: [], by: 1) == nil, "review: a vanished selection or an empty list is handled")
+
+    check(Relative.text(now.addingTimeInterval(-20), now: now) == "just now" && Relative.text(now.addingTimeInterval(-7200), now: now) != "just now", "review: the last minute reads as just now")
+    check(Mode.allCases.allSatisfy { $0.shortLabel.count <= 9 }, "review: every mode name fits the popover's switch")
+  }
+
+  private static func inProgress() {
+    var low = TaskItem(title: "Low but started", importance: 0.1, firstSeen: now)
+    low.startedAt = now.addingTimeInterval(-25 * 60)
+    let urgent = TaskItem(title: "Urgent", deadline: now.addingTimeInterval(3600), importance: 1, firstSeen: now)
+    let other = TaskItem(title: "Other", importance: 0.5, firstSeen: now)
+    check(low.isInProgress && !urgent.isInProgress, "progress: a started task is in progress")
+    check(Ranker.ranked([other, urgent, low], now: now).map(\.title) == ["Low but started", "Urgent", "Other"], "progress: what you are doing comes first, whatever its score")
+    var finished = low
+    finished.status = .done
+    check(!finished.isInProgress, "progress: a finished task is no longer in progress")
+
+    let recs = (1...4).map { Recommendation(title: "Rec \($0)", url: "https://example.org/p\($0)", source: "Hacker News", kind: "article", why: "", bucket: "related") }
+    let ordered = Ranker.ranked([other, urgent, low], now: now)
+    for mode in Mode.allCases {
+      let feed = Feed.mix(tasks: ordered, suggestions: recs, mode: mode)
+      check(feed.first?.id == "task-\(low.id)", "progress: the feed opens on the task in progress in \(mode.shortLabel) mode")
+    }
+    check(kinds(Feed.mix(tasks: ordered, suggestions: recs, mode: .dopamine)) == "TSSSTST", "progress: after it, Pure dopamine still leads with suggestions")
+    check(kinds(Feed.mix(tasks: ordered, suggestions: recs, mode: .balanced)) == "TTTS", "progress: Balanced keeps its tasks-first blend")
+
+    check(Ranker.elapsedText(since: now.addingTimeInterval(-20), now: now) == "just started" && Ranker.elapsedText(since: now.addingTimeInterval(-25 * 60), now: now) == "25 min", "progress: elapsed time reads in minutes")
+    check(Ranker.elapsedText(since: now.addingTimeInterval(-2 * 3600), now: now) == "2 h" && Ranker.elapsedText(since: now.addingTimeInterval(-135 * 60), now: now) == "2 h 15 min", "progress: and in hours once past one")
+
+    guard let store = try? Store.inMemory() else { return check(false, "progress: open in-memory store") }
+    check((try? store.migrate()) != nil, "progress: migration can run again safely")
+    store.save(low)
+    check(store.task(id: low.id)?.startedAt == low.startedAt && store.task(id: low.id)?.isInProgress == true, "progress: the start time is stored with the task")
+    var paused = low
+    paused.startedAt = nil
+    store.save(paused)
+    check(store.task(id: low.id)?.isInProgress == false, "progress: pausing clears it")
+    store.save(low)
+    TaskMerging.apply([operation("complete", id: low.id)], to: store, now: now)
+    check(store.task(id: low.id)?.status == .done && store.task(id: low.id)?.isInProgress == false, "progress: a task finished on screen is closed even while in progress")
+  }
+
+  private static func display() {
+    check(!ScreenCapturer.isDisplayAsleep || ScreenCapturer.isAway, "display: a sleeping display counts as away")
+  }
+
+  private static func webSearch() {
+    let body = ClaudeClient.webSearchBody(model: ClaudeClient.sonnet, system: "s", messages: [["role": "user", "content": "find things"]], maxUses: 5)
+    let tool = (body["tools"] as? [[String: Any]])?.first
+    check(tool?["type"] as? String == "web_search_20250305" && tool?["name"] as? String == "web_search" && tool?["max_uses"] as? Int == 5, "web: the request declares the web search tool with a cap on searches")
+    check(JSONSerialization.isValidJSONObject(body) && body["temperature"] == nil && body["tool_choice"] == nil, "web: the request serialises and forces nothing")
+    check((body["output_config"] as? [String: Any])?["format"] == nil && body["fallbacks"] as? String == "default", "web: no JSON schema is asked for, because the pages are read from the search results")
+
+    let reply = #"""
+      [{"type":"text","text":"Searching."},
+       {"type":"server_tool_use","id":"s1","name":"web_search","input":{"query":"humanoid imitation video"}},
+       {"type":"web_search_tool_result","tool_use_id":"s1","content":[
+          {"type":"web_search_result","url":"https://www.youtube.com/watch?v=abc","title":"Humanoid imitation, explained","page_age":"2 weeks ago"},
+          {"type":"web_search_result","url":"https://github.com/example/imitation","title":"example/imitation"},
+          {"type":"web_search_result","url":"https://www.youtube.com/watch?v=abc","title":"Duplicate"}]},
+       {"type":"web_search_tool_result","tool_use_id":"s2","content":{"type":"web_search_tool_result_error","error_code":"max_uses_exceeded"}},
+       {"type":"text","text":"Done.","citations":[{"type":"web_search_result_location","url":"https://example.com/essay","title":"An essay"}]}]
+      """#
+    let content = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [[String: Any]] ?? []
+    let results = ClaudeClient.webResults(in: content)
+    check(results.map(\.url) == ["https://www.youtube.com/watch?v=abc", "https://github.com/example/imitation", "https://example.com/essay"], "web: pages are read from result blocks and citations, once each")
+    check(results.first?.title == "Humanoid imitation, explained", "web: a failed search inside the reply is skipped without losing the rest")
+    check(ClaudeClient.webResults(in: [["type": "text", "text": "See https://evil.example/now"]]).isEmpty, "web: a link the model only wrote in its text is never taken")
+
+    let candidates = CandidateSources.candidates(fromWeb: results + [ClaudeClient.WebResult(url: "not a url", title: "x"), ClaudeClient.WebResult(url: "https://example.com/untitled", title: "")])
+    check(candidates.map(\.source) == ["youtube.com", "github.com", "example.com"], "web: each candidate is named by its site, and unusable ones are dropped")
+
+    guard let store = try? Store.inMemory(),
+      let extraction = try? JSONCoding.decoder.decode(Extraction.self, from: Data(extractionFixture.utf8))
+    else { return check(false, "web: fixtures load") }
+    store.addObservation(start: now.addingTimeInterval(-600), end: now, extraction: extraction)
+    check(store.usedSources(since: now.addingTimeInterval(-3600)) == ["YouTube"], "web: the places you read and watch are recalled")
+    store.addObservation(start: now.addingTimeInterval(-300), end: now, extraction: Extraction(
+      summary: "s", activities: [], commitments: [], completions: [],
+      content: [Extraction.ContentSeen(title: "Q3 board deck FINAL", source: "hw7-solutions.tex", url: "", kind: "other", topic: "approximation algorithms")]))
+    let prompt = Recommender(store: store).webSearchPrompt(now: now) ?? ""
+    check(prompt.contains("- YouTube") && prompt.contains("- distributed consensus") && prompt.contains("- approximation algorithms"), "web: Claude is told the subjects and where you already spend time")
+    // Found in review: this call can search the web, so titles and file names must not reach it.
+    check(!prompt.contains("Raft explained") && !prompt.contains("Q3 board deck") && !prompt.contains("hw7-solutions"), "review: titles of what you had open, and file names, never reach the web search")
+    check(Recommender.looksLikeFile("hw7-solutions.tex") && Recommender.looksLikeFile("notes.md") && !Recommender.looksLikeFile("example.com") && !Recommender.looksLikeFile("Planetary Radio") && !Recommender.looksLikeFile("v2.0 release notes"), "review: file names are told apart from site names and ordinary names")
+    check((try? Store.inMemory()).flatMap { Recommender(store: $0).webSearchPrompt(now: now) } == nil, "review: with no subjects recorded, no web search is made")
+    check(Prompts.webSearch.contains("Never search for the user's own name"), "web: the prompt forbids searching for you or your private projects")
+
+    store.addWebSearches(3, now: now)
+    store.addWebSearches(0, now: now)
+    let row = store.usage(on: now).first { $0.model == "web searches" }
+    check(row?.inputTokens == 3 && row?.cost == 0, "web: searches are counted, and not given a made-up price")
+  }
+
+  private static func handMadeGraph() {
+    guard let store = try? Store.inMemory() else { return check(false, "hand: open in-memory store") }
+    let a = Entity(kind: .project, name: "Arc", firstSeen: now, lastSeen: now)
+    let b = Entity(kind: .person, name: "Sam", firstSeen: now, lastSeen: now)
+    store.save(a)
+    store.save(b)
+    check(store.linkByHand(a.id, b.id, ts: now) && !store.linkByHand(b.id, a.id, ts: now), "hand: a link is added once, whichever way round it is drawn")
+    check(!store.linkByHand(a.id, a.id, ts: now), "hand: an entry cannot be linked to itself")
+    check(store.links(entityID: a.id).first?.how == Store.handMade && store.allLinks().first?.weight == 3, "hand: a hand-made link is labelled as yours and pulls strongly")
+    store.link(a.id, b.id, how: "works on", evidence: "seen in channel", observationID: 7, ts: now)
+    check(store.allLinks().count == 1 && store.allLinks().first?.weight == 4 && store.links(entityID: a.id).first?.how == Store.handMade, "hand: a reading that later states it strengthens the same link and leaves your label")
+    store.removeLink(b.id, a.id)
+    check(store.allLinks().isEmpty && store.entity(id: a.id) != nil && store.entity(id: b.id) != nil, "hand: removing a link leaves both entries in place")
+
+    // Found in review: a link the user removed must stay removed.
+    check(!store.link(a.id, b.id, how: "works on", evidence: "seen again", observationID: 8, ts: now) && store.allLinks().isEmpty && store.links(entityID: a.id).isEmpty, "review: a reading cannot bring back a link you removed")
+    check(store.linkByHand(a.id, b.id, ts: now) && store.allLinks().first?.how == Store.handMade, "review: drawing it again yourself does bring it back")
+    store.link(a.id, b.id, how: "is on", evidence: "seen", observationID: 9, ts: now)
+    check(store.allLinks().first?.how == Store.handMade && store.allLinks().first?.weight == 4, "review: a link you drew keeps your label when a reading agrees with it")
+
+    // Found in review: a reopened task must not come back as in progress.
+    let reopened: Bool = MainActor.assumeIsolated {
+      guard let fresh = try? Store.inMemory() else { return false }
+      let model = AppModel(store: fresh)
+      var task = TaskItem(title: "Was under way", firstSeen: now)
+      task.startedAt = now.addingTimeInterval(-3 * 86_400)
+      task.status = .done
+      fresh.save(task)
+      model.reopen(task)
+      let back = fresh.task(id: task.id)
+      return back?.status == .open && back?.startedAt == nil && back?.isInProgress == false
+    }
+    check(reopened, "review: reopening a finished task clears its old start time")
+  }
+
+  private static func livingGraph() {
+    func ring(_ ids: [String]) -> [GraphEdge] { [GraphEdge(a: ids[0], b: ids[1], weight: 1, how: ""), GraphEdge(a: ids[1], b: ids[2], weight: 1, how: ""), GraphEdge(a: ids[0], b: ids[2], weight: 1, how: "")] }
+    let nodes = ["a1", "a2", "a3", "b1", "b2", "b3", "loner"]
+    let edges = ring(["a1", "a2", "a3"]) + ring(["b1", "b2", "b3"])
+    let simulation = GraphSimulation()
+    simulation.sync(nodes: nodes, edges: edges)
+    check(simulation.bodies.count == 7 && simulation.isAtRest, "living: the graph opens already settled, with every dot placed")
+    func gap(_ first: String, _ second: String) -> Double {
+      let a = simulation.position(of: first)!, b = simulation.position(of: second)!
+      return hypot(Double(a.x - b.x), Double(a.y - b.y))
+    }
+    check(simulation.isAtRest, "living: it comes to rest, so the window stops redrawing")
+    check(simulation.bodies.values.allSatisfy { $0.x.isFinite && $0.y.isFinite && abs($0.x) < 2000 && abs($0.y) < 2000 }, "living: nothing flies off")
+    let within = (gap("a1", "a2") + gap("a2", "a3") + gap("b1", "b2") + gap("b2", "b3")) / 4
+    check(within < 160 && within > 30 && gap("a1", "b1") > within && gap("loner", "a1") > within, "living: linked dots settle near each other, and the rest keep their distance")
+
+    let before = simulation.position(of: "a1")
+    simulation.sync(nodes: nodes, edges: edges)
+    check(simulation.isAtRest && simulation.position(of: "a1") == before, "living: redrawing with the same data disturbs nothing")
+    simulation.sync(nodes: nodes + ["new"], edges: edges + [GraphEdge(a: "a1", b: "new", weight: 3, how: "")])
+    let arrival = simulation.position(of: "new")!
+    check(!simulation.isAtRest && simulation.position(of: "a1") == before && hypot(Double(arrival.x - before!.x), Double(arrival.y - before!.y)) < 80, "living: a new dot appears beside what it is linked to, and the others stay put at first")
+    for _ in 0..<900 { simulation.tick() }
+    check(gap("new", "a1") < 170, "living: a new link pulls its two dots together")
+
+    // Found in review: the physics must stay quick as the index grows.
+    let many = (0..<300).map { "n\($0)" }
+    let chain = (0..<299).map { GraphEdge(a: "n\($0)", b: "n\($0 + 1)", weight: 1, how: "") }
+    let large = GraphSimulation()
+    let began = Date()
+    large.sync(nodes: many, edges: chain)
+    for _ in 0..<60 { large.tick() }
+    let took = Date().timeIntervalSince(began)
+    if CommandLine.arguments.contains("--timings") { print(String(format: "300-entry layout plus one second of animation: %.2f s", took)) }
+    check(took < 3 && large.bodies.count == 300 && large.bodies.values.allSatisfy { $0.x.isFinite && $0.y.isFinite }, "review: three hundred entries lay out and animate without stalling")
+
+    simulation.hold("loner", at: CGPoint(x: 400, y: -300))
+    for _ in 0..<50 { simulation.tick() }
+    check(simulation.position(of: "loner") == CGPoint(x: 400, y: -300) && !simulation.isAtRest, "living: a dot being dragged stays under the pointer")
+    simulation.release("loner")
+    simulation.sync(nodes: nodes, edges: edges)
+    check(simulation.position(of: "new") == nil && simulation.bodies.count == 7, "living: a removed entry leaves the graph")
+  }
+
   private final class Counter: @unchecked Sendable {
     var arxiv = 0
     var other = 0
@@ -732,8 +928,33 @@ enum SelfTest {
     check(store.entity(id: project.id)?.seenCount == 1, "graph: one sighting per reading, however often it is recorded")
     EntityResolution.recordSightings(seen, observationID: 2, at: now.addingTimeInterval(600), in: store)
     check(store.entity(id: project.id)?.seenCount == 2 && store.sightings(entityID: project.id).first?.context == "Debugged leader election", "graph: sightings keep what you were doing")
+    check(store.links(entityID: project.id).isEmpty, "graph: being seen in the same reading no longer connects two entries")
+
+    let stated = [
+      Extraction.Relation(from: "Maya Chen", to: "440 P3", how: "works on", evidence: "Posted in the project channel"),
+      Extraction.Relation(from: "Maya Chen", to: "YouTube", how: "watches", evidence: "A tab was open"),
+      Extraction.Relation(from: "Maya Chen", to: "Someone Unknown", how: "knows", evidence: "x"),
+      Extraction.Relation(from: "440 P3", to: "Maya Chen", how: "has member", evidence: "  "),
+    ]
+    check(EntityResolution.recordRelations(stated, mentions: seen, observationID: 1, at: now, in: store) == 1, "graph: only a stated relationship between two indexed entries, with evidence, becomes a link")
+    check(EntityResolution.recordRelations(stated, mentions: seen, observationID: 1, at: now, in: store) == 0, "graph: recording the same reading twice changes nothing")
+    EntityResolution.recordRelations(stated, mentions: seen, observationID: 2, at: now.addingTimeInterval(600), in: store)
     let links = store.links(entityID: project.id)
-    check(links.count == 1 && links.first?.entity.id == maya.id && links.first?.weight == 2, "graph: things seen together are linked, and ignored names are not")
+    check(links.count == 1 && links.first?.entity.id == maya.id && links.first?.weight == 2 && links.first?.how == "works on", "graph: stating it again in a later reading strengthens the link and keeps how they are related")
+    check(store.allLinks() == [GraphEdge(a: min(project.id, maya.id), b: max(project.id, maya.id), weight: 2, how: "works on")], "graph: the link is stored once, whichever way round it was stated")
+
+    let triangleA = ["a1", "a2", "a3"], triangleB = ["b1", "b2", "b3"]
+    func ring(_ ids: [String]) -> [GraphEdge] { [GraphEdge(a: ids[0], b: ids[1], weight: 1, how: ""), GraphEdge(a: ids[1], b: ids[2], weight: 1, how: ""), GraphEdge(a: ids[0], b: ids[2], weight: 1, how: "")] }
+    let nodes = triangleA + triangleB + ["loner"]
+    let layout = GraphLayout.positions(nodes: nodes, edges: ring(triangleA) + ring(triangleB))
+    func gap(_ first: String, _ second: String) -> Double { hypot(Double(layout[first]!.x - layout[second]!.x), Double(layout[first]!.y - layout[second]!.y)) }
+    let within = (gap("a1", "a2") + gap("a2", "a3") + gap("b1", "b2") + gap("b2", "b3")) / 4
+    let between = (gap("a1", "b1") + gap("a2", "b2") + gap("a3", "b3")) / 3
+    check(layout.count == 7 && layout.values.allSatisfy { $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1.0001 && abs($0.y) <= 1.0001 }, "graph: every node gets a place inside the frame")
+    check(within * 2 < between, "graph: related nodes cluster, and separate groups sit apart")
+    check(gap("loner", "a1") > within && gap("loner", "b1") > within, "graph: an unconnected node sits outside the clusters")
+    check(GraphLayout.positions(nodes: nodes.reversed(), edges: ring(triangleB) + ring(triangleA)) == layout, "graph: the same data always gives the same picture")
+    check(GraphLayout.positions(nodes: [], edges: []).isEmpty && GraphLayout.positions(nodes: ["only"], edges: []) == ["only": .zero], "graph: empty and single-node graphs are handled")
 
     TaskMerging.apply([
       MergeResult.Operation(op: "create", taskId: "", title: "Submit P3 checkpoint", detail: "", why: "", deadline: "", waitingPerson: "", url: "", sourceApp: "", importance: 0.9, estMinutes: 60, reason: "test", project: "440 p3"),

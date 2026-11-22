@@ -1,8 +1,10 @@
+#if DEBUG
 import AppKit
 import SwiftUI
 
 // `Lifescroll --render-ui <folder>` draws the interface to PNG files over a light and a dark backdrop,
-// using made-up sample data. It is how the look can be checked without running the app, and in
+// using made-up sample data. Debug builds only: none of this, including the sample data, is compiled
+// into the app that `scripts/build-app.sh` produces. It is how the look can be checked without running the app, and in
 // particular how legibility over a pale wallpaper is checked.
 
 /// A stand-in wallpaper. The light one is deliberately pale and busy: the hard case for glass.
@@ -37,6 +39,9 @@ struct PreviewStage<Content: View>: View {
   let light: Bool
   let size: CGSize
   var corner: CGFloat = 14
+  /// Draws the close, minimise and zoom buttons where a real window puts them, so a heading that
+  /// would collide with them shows up in the picture.
+  var windowButtons = false
   @ViewBuilder let content: () -> Content
 
   var body: some View {
@@ -52,6 +57,18 @@ struct PreviewStage<Content: View>: View {
               .blur(radius: 36)
             // The system blur material darkens what it blurs; this stands in for that.
             Color.black.opacity(0.22)
+          }
+        }
+        .overlay(alignment: .topLeading) {
+          if windowButtons {
+            HStack(spacing: 8) {
+              Circle().fill(Color(red: 1.0, green: 0.37, blue: 0.34))
+              Circle().fill(Color(red: 1.0, green: 0.74, blue: 0.18))
+              Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.26))
+            }
+            .frame(width: 52, height: 12)
+            .padding(.leading, 13)
+            .padding(.top, 8)
           }
         }
         .clipShape(shape)
@@ -93,15 +110,32 @@ enum UIPreview {
     ]
     for reading in 1...3 {
       let when = now.addingTimeInterval(Double(-reading) * 3600)
-      var ids: [String] = []
       for (entity, contexts) in notes where reading <= contexts.count || entity.id == project.id {
         store.addSighting(
           entityID: entity.id, observationID: Int64(reading), ts: when,
           context: contexts[min(reading - 1, contexts.count - 1)])
-        ids.append(entity.id)
       }
-      store.linkTogether(ids, ts: when)
     }
+
+    // A second, unrelated group, so the graph has two clusters to pull apart.
+    let app = Entity(kind: .project, name: "Menu bar app", firstSeen: now, lastSeen: now, seenCount: 5)
+    let friend = Entity(kind: .person, name: "Sam Ortiz", firstSeen: now, lastSeen: now, seenCount: 2)
+    let glass = Entity(kind: .topic, name: "Glass interfaces", firstSeen: now, lastSeen: now, seenCount: 2)
+    let notesDoc = Entity(kind: .document, name: "Design notes", firstSeen: now, lastSeen: now, seenCount: 1)
+    let alone = Entity(kind: .topic, name: "Longitude problem", firstSeen: now, lastSeen: now, seenCount: 1)
+    [app, friend, glass, notesDoc, alone].forEach(store.save)
+
+    let stated: [(Entity, Entity, String)] = [
+      (person, project, "works on"), (paper, project, "is the basis of"), (paper, topic, "is about"),
+      (topic, project, "is used in"), (friend, app, "is testing"), (glass, app, "is the look of"),
+      (notesDoc, app, "belongs to"), (notesDoc, glass, "is about"),
+    ]
+    for (index, relation) in stated.enumerated() {
+      store.link(
+        relation.0.id, relation.1.id, how: relation.2, evidence: "sample", observationID: Int64(index + 1),
+        ts: now)
+    }
+    store.link(person.id, project.id, how: "works on", evidence: "sample", observationID: 99, ts: now)
 
     store.save(
       TaskItem(
@@ -176,13 +210,16 @@ enum UIPreview {
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     var written: [String] = []
 
-    func shot<Content: View>(_ name: String, light: Bool, size: CGSize, @ViewBuilder _ content: () -> Content) {
+    func shot<Content: View>(
+      _ name: String, light: Bool, size: CGSize, window: Bool = false, @ViewBuilder _ content: () -> Content
+    ) {
       let panel = content().environmentObject(model)
-      let view = PreviewStage(light: light, size: size) { panel }
+      let view = PreviewStage(light: light, size: size, windowButtons: window) { panel }
       if write(view, to: directory.appendingPathComponent(name)) { written.append(name) }
     }
 
     let popoverStage = CGSize(width: 520, height: 520)
+    let tasksStage = CGSize(width: 800, height: 700)
     model.cardIndex = 0
     shot("popover-task-light.png", light: true, size: popoverStage) { PopoverView() }
     shot("popover-task-dark.png", light: false, size: popoverStage) { PopoverView() }
@@ -191,6 +228,22 @@ enum UIPreview {
       model.cardIndex = index
       shot("popover-suggestion-light.png", light: true, size: popoverStage) { PopoverView() }
       shot("popover-suggestion-dark.png", light: false, size: popoverStage) { PopoverView() }
+    }
+
+    if var underway = model.ranked.dropFirst().first {
+      // Set straight in the store. `model.start` would also open the task's app, which a preview
+      // must never do.
+      underway.startedAt = Date().addingTimeInterval(-25 * 60)
+      model.store.save(underway)
+      model.reload()
+      model.cardIndex = 0
+      shot("popover-in-progress-light.png", light: true, size: popoverStage) { PopoverView() }
+      shot("tasks-in-progress-dark.png", light: false, size: tasksStage, window: true) {
+        TaskListView().frame(width: 640, height: 540)
+      }
+      underway.startedAt = nil
+      model.store.save(underway)
+      model.reload()
     }
 
     model.cardIndex = 0
@@ -204,18 +257,25 @@ enum UIPreview {
     model.hasAPIKey = true
     model.lastError = nil
 
-    let tasksStage = CGSize(width: 800, height: 700)
-    shot("tasks-light.png", light: true, size: tasksStage) {
+    shot("tasks-light.png", light: true, size: tasksStage, window: true) {
       TaskListView().frame(width: 640, height: 540)
     }
-    shot("tasks-dark.png", light: false, size: tasksStage) {
+    shot("tasks-dark.png", light: false, size: tasksStage, window: true) {
       TaskListView().frame(width: 640, height: 540)
     }
 
-    let project = model.entities(.project).first?.id
-    shot("projects-light.png", light: true, size: CGSize(width: 1040, height: 740)) {
+    let project = model.entities(.project).first { $0.name == "Systems project" }?.id
+    let graphStage = CGSize(width: 1040, height: 740)
+    shot("graph-light.png", light: true, size: graphStage, window: true) {
+      GraphView().frame(width: 880, height: 580)
+    }
+    shot("graph-selected-dark.png", light: false, size: graphStage, window: true) {
       GraphView(selection: project).frame(width: 880, height: 580)
+    }
+    shot("projects-light.png", light: true, size: graphStage, window: true) {
+      GraphView(selection: project, showsGraph: false).frame(width: 880, height: 580)
     }
     return written
   }
 }
+#endif

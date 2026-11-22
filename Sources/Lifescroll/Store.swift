@@ -57,6 +57,17 @@ final class Store: @unchecked Sendable {
     try addColumnIfMissing("tasks", "project_id", "TEXT DEFAULT ''")
     try addColumnIfMissing("observations", "entities_done", "INTEGER DEFAULT 0")
     try addColumnIfMissing("frames", "text", "TEXT")
+    try addColumnIfMissing("tasks", "started_at", "REAL")
+    try addColumnIfMissing("entity_links", "how", "TEXT DEFAULT ''")
+    try addColumnIfMissing("entity_links", "evidence", "TEXT DEFAULT ''")
+    try addColumnIfMissing("entity_links", "last_observation", "INTEGER DEFAULT 0")
+    try addColumnIfMissing("entity_links", "removed", "INTEGER DEFAULT 0")
+    // Links used to be made between everything seen in the same ten minutes, which connected
+    // unrelated things. Those are cleared once; from here on a link needs a stated relationship.
+    if value("links_are_stated") == nil {
+      try db.exec("DELETE FROM entity_links")
+      setValue("links_are_stated", "1")
+    }
   }
 
   private func addColumnIfMissing(_ table: String, _ column: String, _ definition: String) throws {
@@ -97,7 +108,7 @@ final class Store: @unchecked Sendable {
       seenCount: row.int("seen_count"),
       status: TaskStatus(rawValue: row.string("status")) ?? .open,
       snoozeUntil: row.date("snooze_until"), origin: row.string("origin"),
-      projectID: row.string("project_id"))
+      projectID: row.string("project_id"), startedAt: row.date("started_at"))
   }
 
   func tasks(projectID: String) -> [TaskItem] {
@@ -130,8 +141,8 @@ final class Store: @unchecked Sendable {
       """
       INSERT INTO tasks (id, title, detail, why, url, source_app, bundle_id, deadline,
         waiting_person, importance, rating, est_minutes, first_seen, last_seen, seen_count,
-        status, snooze_until, origin, project_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status, snooze_until, origin, project_id, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET title = excluded.title, detail = excluded.detail,
         why = excluded.why, url = excluded.url, source_app = excluded.source_app,
         bundle_id = excluded.bundle_id, deadline = excluded.deadline,
@@ -139,7 +150,7 @@ final class Store: @unchecked Sendable {
         rating = excluded.rating, est_minutes = excluded.est_minutes,
         last_seen = excluded.last_seen, seen_count = excluded.seen_count,
         status = excluded.status, snooze_until = excluded.snooze_until,
-        project_id = excluded.project_id
+        project_id = excluded.project_id, started_at = excluded.started_at
       """,
       [
         .text(task.id), .text(task.title), .text(task.detail), .text(task.why), .text(task.url),
@@ -147,7 +158,7 @@ final class Store: @unchecked Sendable {
         .text(task.waitingPerson), .double(task.importance), .double(task.rating),
         .int(Int64(task.estMinutes)), .date(task.firstSeen), .date(task.lastSeen),
         .int(Int64(task.seenCount)), .text(task.status.rawValue), .date(task.snoozeUntil),
-        .text(task.origin), .text(task.projectID),
+        .text(task.origin), .text(task.projectID), .date(task.startedAt),
       ])
   }
 
@@ -411,29 +422,95 @@ final class Store: @unchecked Sendable {
   }
 
   /// Strengthens the link between every pair of entities that appeared in the same reading.
-  func linkTogether(_ ids: [String], ts: Date) {
-    let unique = Array(Set(ids)).sorted()
-    guard unique.count >= 2 else { return }
-    for first in 0..<(unique.count - 1) {
-      for second in (first + 1)..<unique.count {
+  /// Records one stated relationship between two entries. Stating it again in a later reading
+  /// strengthens the link; recording the same reading twice does not.
+  /// Returns false when nothing changed.
+  @discardableResult
+  func link(_ first: String, _ second: String, how: String, evidence: String, observationID: Int64, ts: Date) -> Bool {
+    guard first != second else { return false }
+    let (a, b) = first < second ? (first, second) : (second, first)
+    let existing = try? db.query(
+      "SELECT last_observation, removed, evidence FROM entity_links WHERE a_id = ? AND b_id = ?",
+      [.text(a), .text(b)]
+    ).first
+    if let existing {
+      // The user removed this link. A reading saying otherwise does not bring it back.
+      guard existing.int("removed") == 0 else { return false }
+      guard existing.int64("last_observation") != observationID else { return false }
+      if existing.string("evidence") == Self.byHandEvidence {
+        // A link the user drew keeps its label; the reading only strengthens it.
         _ = try? db.execute(
-          """
-          INSERT INTO entity_links (a_id, b_id, weight, last_seen) VALUES (?, ?, 1, ?)
-          ON CONFLICT(a_id, b_id) DO UPDATE SET weight = weight + 1, last_seen = excluded.last_seen
-          """, [.text(unique[first]), .text(unique[second]), .date(ts)])
+          "UPDATE entity_links SET weight = weight + 1, last_seen = ?, last_observation = ? WHERE a_id = ? AND b_id = ?",
+          [.date(ts), .int(observationID), .text(a), .text(b)])
+      } else {
+        _ = try? db.execute(
+          "UPDATE entity_links SET weight = weight + 1, last_seen = ?, how = ?, evidence = ?, last_observation = ? WHERE a_id = ? AND b_id = ?",
+          [.date(ts), .text(how), .text(evidence), .int(observationID), .text(a), .text(b)])
       }
+    } else {
+      _ = try? db.execute(
+        "INSERT INTO entity_links (a_id, b_id, weight, last_seen, how, evidence, last_observation) VALUES (?, ?, 1, ?, ?, ?, ?)",
+        [.text(a), .text(b), .date(ts), .text(how), .text(evidence), .int(observationID)])
+    }
+    return true
+  }
+
+  static let handMade = "linked by you"
+  static let byHandEvidence = "added by hand"
+
+  /// A link the user drew themselves. It counts for more than one stated by a reading, so the two
+  /// entries sit close on the graph. Returns false if they were already linked or are the same entry.
+  @discardableResult
+  func linkByHand(_ first: String, _ second: String, ts: Date) -> Bool {
+    guard first != second else { return false }
+    let (a, b) = first < second ? (first, second) : (second, first)
+    let existing = try? db.query(
+      "SELECT removed FROM entity_links WHERE a_id = ? AND b_id = ?", [.text(a), .text(b)]
+    ).first
+    if let existing {
+      // Already linked: nothing to do. Removed earlier: drawing it again is the user changing their mind.
+      guard existing.int("removed") == 1 else { return false }
+      _ = try? db.execute(
+        "UPDATE entity_links SET removed = 0, weight = 3, last_seen = ?, how = ?, evidence = ? WHERE a_id = ? AND b_id = ?",
+        [.date(ts), .text(Self.handMade), .text(Self.byHandEvidence), .text(a), .text(b)])
+      return true
+    }
+    _ = try? db.execute(
+      "INSERT INTO entity_links (a_id, b_id, weight, last_seen, how, evidence, last_observation) VALUES (?, ?, 3, ?, ?, ?, 0)",
+      [.text(a), .text(b), .date(ts), .text(Self.handMade), .text(Self.byHandEvidence)])
+    return true
+  }
+
+  /// Takes a link away and remembers that the user did, so no later reading puts it back.
+  func removeLink(_ first: String, _ second: String) {
+    let (a, b) = first < second ? (first, second) : (second, first)
+    _ = try? db.execute(
+      "UPDATE entity_links SET removed = 1 WHERE a_id = ? AND b_id = ?", [.text(a), .text(b)])
+  }
+
+  /// Every link between two entries that are both still in the index.
+  func allLinks() -> [GraphEdge] {
+    let rows = try? db.query(
+      """
+      SELECT l.a_id, l.b_id, l.weight, l.how FROM entity_links l
+      JOIN entities a ON a.id = l.a_id AND a.ignored = 0
+      JOIN entities b ON b.id = l.b_id AND b.ignored = 0
+      WHERE l.removed = 0
+      """)
+    return (rows ?? []).map {
+      GraphEdge(a: $0.string("a_id"), b: $0.string("b_id"), weight: $0.int("weight"), how: $0.string("how"))
     }
   }
 
   func links(entityID: String, limit: Int = 20) -> [EntityLink] {
     let rows = try? db.query(
       """
-      SELECT CASE WHEN a_id = ? THEN b_id ELSE a_id END AS other, weight FROM entity_links
-      WHERE a_id = ? OR b_id = ? ORDER BY weight DESC, last_seen DESC LIMIT ?
+      SELECT CASE WHEN a_id = ? THEN b_id ELSE a_id END AS other, weight, how FROM entity_links
+      WHERE (a_id = ? OR b_id = ?) AND removed = 0 ORDER BY weight DESC, last_seen DESC LIMIT ?
       """, [.text(entityID), .text(entityID), .text(entityID), .int(Int64(limit))])
     return (rows ?? []).compactMap { row in
       guard let other = entity(id: row.string("other")), !other.ignored else { return nil }
-      return EntityLink(entity: other, weight: row.int("weight"))
+      return EntityLink(entity: other, weight: row.int("weight"), how: row.string("how"))
     }
   }
 
@@ -513,6 +590,15 @@ final class Store: @unchecked Sendable {
     }
   }
 
+  /// The sites, channels and accounts the user has recently been reading and watching, most recent
+  /// first. These steer where suggestions are looked for.
+  func usedSources(since: Date, limit: Int = 20) -> [String] {
+    let rows = try? db.query(
+      "SELECT source, MAX(id) AS latest FROM content_seen WHERE ts >= ? AND source != '' GROUP BY source ORDER BY latest DESC LIMIT ?",
+      [.date(since), .int(Int64(limit))])
+    return (rows ?? []).map { $0.string("source") }
+  }
+
   /// Links and titles of things the user has already seen, so they are not suggested back to them.
   func seenContent() -> (urls: Set<String>, titles: Set<String>) {
     let rows = (try? db.query("SELECT url, title FROM content_seen")) ?? []
@@ -552,6 +638,12 @@ final class Store: @unchecked Sendable {
       ON CONFLICT(day, model) DO UPDATE SET input_tokens = input_tokens + excluded.input_tokens,
         output_tokens = output_tokens + excluded.output_tokens
       """, [.text(Self.dayKey(now)), .text(model), .int(Int64(input)), .int(Int64(output))])
+  }
+
+  /// Web searches are billed per search, not per token, so they are counted under their own name.
+  func addWebSearches(_ count: Int, now: Date = Date()) {
+    guard count > 0 else { return }
+    addUsage(model: "web searches", input: count, output: 0, now: now)
   }
 
   func usage(on date: Date) -> [UsageRow] {

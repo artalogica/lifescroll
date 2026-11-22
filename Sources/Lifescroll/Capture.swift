@@ -96,6 +96,12 @@ enum ScreenCapturer {
   /// Shows the system's Screen Recording prompt the first time, and adds the app to the list in Settings.
   static func requestPermission() { _ = CGRequestScreenCaptureAccess() }
 
+  /// The display has been put to sleep: turned off, dimmed out by the energy saver, or lid closed.
+  static var isDisplayAsleep: Bool { CGDisplayIsAsleep(CGMainDisplayID()) != 0 }
+
+  /// Nobody can be looking at the screen, so there is nothing to log, capture or nudge about.
+  static var isAway: Bool { isScreenLocked || isDisplayAsleep }
+
   static var isScreenLocked: Bool {
     guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
     return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
