@@ -112,15 +112,22 @@ linked only when Haiku reports that a screen showed them to be related, with wha
 evidence: a person posting in a project's channel, a paper about a topic. Being on screen in the
 same ten minutes links nothing. Stating a relationship again in a later reading strengthens it.
 
-The **Projects** button in the popover opens the index as a node graph. Related entries pull
-together into clusters and unrelated ones drift apart. The graph is a live simulation: it opens
-settled, and when something is added or linked the dots ease into their new places. Scroll with
-two fingers to pan, pinch or hold Command and scroll to zoom, and drag any dot to move it. Click a
-dot to see its tasks, what it is linked to and how, and a dated log of what you did with it.
+The **Projects** button in the popover opens the index as a node graph. Entries joined by links
+gather into clusters. Each cluster keeps clear space around it and sits on a faint backdrop, with
+the name of its best-connected entry in bold, so one section can be told from the next. Entries
+with no links yet sit around the outside. The graph is a live simulation: it opens settled, and
+when something is added or linked the dots ease into their new places.
 
-To link two entries, select one and drag the plus that appears beside it onto the other. Each link
-in the panel has a button to remove it. Entries can be added by hand from the row above the graph.
-A List view is one switch away. "Remove from index" hides an entry and stops it being re-added.
+Click a dot to see its tasks, what it is linked to and how, and a dated log of what you did with
+it. Drag a dot to move it, or drag empty space to move the whole picture. Scroll with two fingers
+to pan; pinch, or hold Command and scroll, to zoom. Until you pan or zoom, the view keeps everything
+in frame by itself; the button in the corner, or a double-click on empty space, goes back to that.
+
+To link two entries, select one and drag the plus that appears beside it onto the other: the line
+snaps to a dot when it is close. Or click the plus and then click the other dot; Esc cancels. Each
+link in the panel has a button to remove it. Entries can be added by hand from the row above the
+graph. A List view is one switch away. "Remove from index" hides an entry and stops it being
+re-added.
 
 Modes set both the nudge and the blend of the feed:
 
@@ -179,6 +186,13 @@ It uses invented sample data and opens nothing of yours:
 
 ```bash
 .build/debug/Lifescroll --render-ui build/ui-preview
+```
+
+To see how the graph lays out a real index, draw the Projects window from a database file. Give it
+a copy, because opening a file brings it up to the current schema:
+
+```bash
+.build/debug/Lifescroll --render-graph /path/to/copy.sqlite build/graph.png
 ```
 
 To time text recognition on your newest stored screenshots (it prints counts, never the text):

@@ -124,6 +124,15 @@ enum UIPreview {
     let notesDoc = Entity(kind: .document, name: "Design notes", firstSeen: now, lastSeen: now, seenCount: 1)
     let alone = Entity(kind: .topic, name: "Longitude problem", firstSeen: now, lastSeen: now, seenCount: 1)
     [app, friend, glass, notesDoc, alone].forEach(store.save)
+    // Entries with no links yet, which is how most of a young index looks.
+    let unlinked: [(EntityKind, String)] = [
+      (.person, "Priya Raman"), (.person, "Leo Fischer"), (.project, "Reading group"),
+      (.project, "Apartment search"), (.document, "Lease draft"), (.document, "Lecture 14 slides"),
+      (.topic, "Type design"), (.topic, "Sourdough"), (.person, "Noor Haddad"), (.document, "Trip budget"),
+    ]
+    for (kind, name) in unlinked {
+      store.save(Entity(kind: kind, name: name, firstSeen: now, lastSeen: now, seenCount: 1))
+    }
 
     let stated: [(Entity, Entity, String)] = [
       (person, project, "works on"), (paper, project, "is the basis of"), (paper, topic, "is about"),
@@ -192,6 +201,19 @@ enum UIPreview {
     model.mode = .balanced
     model.reload()
     return model
+  }
+
+  /// Draws the Projects window from a database file, to see how a real index lays out. Point it
+  /// at a copy: opening a file brings it up to this build's schema.
+  static func renderGraph(database: String, to url: URL) -> Bool {
+    guard let store = try? Store(path: database, framesDirectory: FileManager.default.temporaryDirectory)
+    else { return false }
+    let model = AppModel(store: store)
+    model.reload()
+    let view = PreviewStage(light: false, size: CGSize(width: 1260, height: 860), windowButtons: true) {
+      GraphView().frame(width: 1100, height: 700).environmentObject(model)
+    }
+    return write(view, to: url)
   }
 
   private static func write<Content: View>(_ view: Content, to url: URL) -> Bool {
@@ -265,15 +287,31 @@ enum UIPreview {
     }
 
     let project = model.entities(.project).first { $0.name == "Systems project" }?.id
-    let graphStage = CGSize(width: 1040, height: 740)
+    let graphStage = CGSize(width: 1260, height: 860)
     shot("graph-light.png", light: true, size: graphStage, window: true) {
-      GraphView().frame(width: 880, height: 580)
+      GraphView().frame(width: 1100, height: 700)
     }
     shot("graph-selected-dark.png", light: false, size: graphStage, window: true) {
-      GraphView(selection: project).frame(width: 880, height: 580)
+      GraphView(selection: project).frame(width: 1100, height: 700)
+    }
+    // A link caught halfway: drawn once so the graph knows its size, then the pointer presses the
+    // plus and drags it to another dot, exactly as the mouse would, and it is drawn again.
+    let linking = GraphController()
+    for pass in 0..<2 {
+      shot("graph-linking-dark.png", light: false, size: graphStage, window: true) {
+        GraphView(selection: project, preparedGraph: linking).frame(width: 1100, height: 700)
+      }
+      if pass == 0, let plus = linking.plusCentre,
+        let other = model.graph().entities.first(where: { $0.name == "Sam Ortiz" }),
+        let end = linking.screenPosition(of: other.id)
+      {
+        linking.pointerDown(at: plus)
+        linking.pointerDragged(to: CGPoint(x: (plus.x + end.x) / 2, y: (plus.y + end.y) / 2))
+        linking.pointerDragged(to: CGPoint(x: end.x + 5, y: end.y - 4))
+      }
     }
     shot("projects-light.png", light: true, size: graphStage, window: true) {
-      GraphView(selection: project, showsGraph: false).frame(width: 880, height: 580)
+      GraphView(selection: project, showsGraph: false).frame(width: 1100, height: 700)
     }
     return written
   }

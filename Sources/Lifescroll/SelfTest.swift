@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 /// `Lifescroll --self-test` runs these checks and exits non-zero on any failure.
 /// Command Line Tools ship without XCTest, so the checks live in the app itself.
@@ -38,6 +39,8 @@ enum SelfTest {
     webSearch()
     handMadeGraph()
     livingGraph()
+    graphPointer()
+    graphWindow()
     print(failures == 0 ? "PASS  \(passes) checks" : "FAILED  \(failures) of \(passes + failures) checks")
     return failures == 0
   }
@@ -837,6 +840,22 @@ enum SelfTest {
     check(simulation.bodies.values.allSatisfy { $0.x.isFinite && $0.y.isFinite && abs($0.x) < 2000 && abs($0.y) < 2000 }, "living: nothing flies off")
     let within = (gap("a1", "a2") + gap("a2", "a3") + gap("b1", "b2") + gap("b2", "b3")) / 4
     check(within < 160 && within > 30 && gap("a1", "b1") > within && gap("loner", "a1") > within, "living: linked dots settle near each other, and the rest keep their distance")
+    // The complaint this answers: clusters sat so close that one could not be told from the next.
+    let nearest = ["a1", "a2", "a3"].flatMap { a in ["b1", "b2", "b3"].map { gap(a, $0) } }.min() ?? 0
+    check(nearest > within * 1.6 && nearest > GraphSimulation.clusterGap, "spacing: the nearest dots of two clusters are much further apart than dots inside one")
+    let lonerReach = ["a1", "a2", "a3", "b1", "b2", "b3"].map { gap("loner", $0) }.min() ?? 0
+    check(lonerReach > within, "spacing: an entry with no links keeps clear of every cluster")
+    let discs = simulation.clusterDiscs
+    let discGap = discs.count == 2 ? hypot(Double(discs[0].centre.x - discs[1].centre.x), Double(discs[0].centre.y - discs[1].centre.y)) - discs[0].radius - discs[1].radius : 0
+    check(discs.count == 2 && discs.allSatisfy { $0.count == 3 } && discGap > 60, "spacing: each cluster has its own circle, and the circles do not touch")
+    check(GraphLayout.components(nodes: nodes, edges: edges).map(\.count) == [3, 3, 1], "spacing: linked entries are grouped into clusters, biggest first")
+    let crowd = (0..<40).map { "x\($0)" }
+    let pairs = stride(from: 0, to: 12, by: 3).flatMap { ring(["x\($0)", "x\($0 + 1)", "x\($0 + 2)"]) }
+    let start = GraphLayout.arranged(nodes: crowd, edges: pairs)
+    let core = GraphLayout.coreRadius(clusterSizes: [3, 3, 3, 3])
+    func reach(_ id: String) -> Double { hypot(Double(start[id]!.x) / GraphLayout.stretch, Double(start[id]!.y)) }
+    check(start.count == 40 && (12..<40).allSatisfy { reach("x\($0)") > core } && (0..<12).allSatisfy { reach("x\($0)") < (12..<40).map { reach("x\($0)") }.min()! }, "spacing: clusters start in the middle and unlinked entries on rings around them")
+    check(GraphLayout.arranged(nodes: crowd.reversed(), edges: pairs.reversed()) == start, "spacing: the same data always starts from the same picture")
 
     let before = simulation.position(of: "a1")
     simulation.sync(nodes: nodes, edges: edges)
@@ -864,6 +883,199 @@ enum SelfTest {
     simulation.release("loner")
     simulation.sync(nodes: nodes, edges: edges)
     check(simulation.position(of: "new") == nil && simulation.bodies.count == 7, "living: a removed entry leaves the graph")
+  }
+
+  /// Drives the graph the way the mouse does, with plain points, and checks what comes of it.
+  private static func graphPointer() {
+    let now = Date()
+    func entry(_ name: String, _ kind: EntityKind = .project) -> Entity {
+      Entity(id: name, kind: kind, name: name, firstSeen: now, lastSeen: now, seenCount: 2)
+    }
+    let entities = ["a1", "a2", "a3", "b1", "b2", "b3", "loner"].map { entry($0) }
+    func ring(_ ids: [String]) -> [GraphEdge] { [GraphEdge(a: ids[0], b: ids[1], weight: 1, how: ""), GraphEdge(a: ids[1], b: ids[2], weight: 1, how: ""), GraphEdge(a: ids[0], b: ids[2], weight: 1, how: "")] }
+    let edges = ring(["a1", "a2", "a3"]) + ring(["b1", "b2", "b3"])
+    let graph = GraphController()
+    var selected: String?
+    var selections = 0
+    var linked: [(String, String)] = []
+    func refresh() {
+      graph.update(entities: entities, edges: edges, selection: selected, onSelect: { selected = $0; selections += 1 }, onLink: { linked.append(($0, $1)) })
+    }
+    let size = CGSize(width: 900, height: 600)
+    refresh()
+    graph.frame(at: now, size: size)
+    func at(_ id: String) -> CGPoint { graph.screenPosition(of: id)! }
+    func drag(from: CGPoint, to: CGPoint, steps: Int = 6) {
+      graph.pointerDown(at: from)
+      for step in 1...steps {
+        let t = CGFloat(step) / CGFloat(steps)
+        graph.pointerDragged(to: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
+      }
+      graph.pointerUp(at: to)
+      refresh()
+    }
+    func click(_ point: CGPoint, clicks: Int = 1) {
+      graph.pointerDown(at: point)
+      graph.pointerUp(at: point, clicks: clicks)
+      refresh()
+    }
+    let inView = CGRect(origin: .zero, size: size).insetBy(dx: 20, dy: 20)
+    check(entities.allSatisfy { inView.contains(at($0.id)) }, "pointer: the graph opens with every dot in view")
+    check(graph.plusCentre == nil && graph.node(at: at("a1")) == "a1" && graph.node(at: CGPoint(x: 3, y: 3)) == nil, "pointer: a dot is found under the pointer, and empty space is empty")
+
+    click(at("a1"))
+    check(selected == "a1" && graph.plusCentre != nil && graph.isOnPlus(graph.plusCentre!), "pointer: clicking a dot selects it and shows its plus")
+    let wobble = at("a2")
+    graph.pointerDown(at: wobble)
+    graph.pointerDragged(to: CGPoint(x: wobble.x + 2, y: wobble.y + 1))
+    graph.pointerUp(at: CGPoint(x: wobble.x + 2, y: wobble.y + 1))
+    refresh()
+    check(selected == "a2", "pointer: a click that wobbles a couple of points is still a click")
+
+    // The reported fault: dragging the plus onto another dot did nothing.
+    click(at("a1"))
+    let plus = graph.plusCentre!
+    graph.pointerDown(at: plus)
+    graph.pointerDragged(to: CGPoint(x: plus.x + 30, y: plus.y + 10))
+    check(graph.linkFrom == "a1" && graph.linkEnd != nil && graph.linkTarget == nil && graph.hint != nil, "linking: dragging the plus pulls a line out of the selected dot")
+    let near = CGPoint(x: at("b2").x + 9, y: at("b2").y - 7)
+    graph.pointerDragged(to: near)
+    check(graph.linkTarget == "b2", "linking: the line catches a dot once the pointer is close to it")
+    graph.pointerUp(at: near)
+    refresh()
+    check(linked.count == 1 && linked.first?.0 == "a1" && linked.first?.1 == "b2" && graph.linkFrom == nil && selected == "a1", "linking: letting go on a dot links the two, once, and keeps the selection")
+
+    drag(from: graph.plusCentre!, to: CGPoint(x: 12, y: 12))
+    check(linked.count == 1 && graph.linkFrom == nil, "linking: letting go on empty space links nothing")
+    drag(from: graph.plusCentre!, to: at("a1"))
+    check(linked.count == 1, "linking: a dot cannot be linked to itself")
+
+    click(graph.plusCentre!)
+    check(graph.linkArmed && graph.linkFrom == "a1" && linked.count == 1, "linking: clicking the plus, without dragging, starts a link that follows the pointer")
+    graph.pointerMoved(to: at("b3"))
+    check(graph.linkTarget == "b3", "linking: the waiting link catches the dot the pointer is over")
+    click(at("b3"))
+    check(linked.count == 2 && linked.last?.1 == "b3" && !graph.linkArmed && selected == "a1", "linking: the next click on a dot completes it")
+    click(graph.plusCentre!)
+    check(graph.cancel() && !graph.linkArmed && graph.linkFrom == nil && !graph.cancel(), "linking: Esc gives up on a waiting link")
+    click(graph.plusCentre!)
+    click(CGPoint(x: 12, y: 12))
+    check(linked.count == 2 && !graph.linkArmed && selected == "a1", "linking: clicking empty space gives up on it too, and links nothing")
+
+    // Dragging a dot moves that dot; dragging empty space moves the view.
+    let before = at("loner")
+    let drop = CGPoint(x: before.x + 60, y: before.y - 40)
+    graph.pointerDown(at: CGPoint(x: before.x + 3, y: before.y + 2))
+    graph.pointerDragged(to: CGPoint(x: drop.x + 3, y: drop.y + 2))
+    let held = at("loner")
+    check(abs(held.x - drop.x) < 0.5 && abs(held.y - drop.y) < 0.5 && graph.animating, "pointer: a dragged dot follows the pointer from where it was grabbed, without jumping")
+    graph.pointerUp(at: CGPoint(x: drop.x + 3, y: drop.y + 2))
+    refresh()
+    check(selected == "a1" && linked.count == 2, "pointer: dragging a dot neither selects it nor links it")
+
+    for _ in 0..<600 { graph.frame(at: now, size: size) }
+    let anchor = at("b1")
+    drag(from: CGPoint(x: 12, y: 300), to: CGPoint(x: 92, y: 250))
+    check(abs(at("b1").x - anchor.x - 80) < 0.5 && abs(at("b1").y - anchor.y + 50) < 0.5 && selected == "a1" && graph.userMoved, "pointer: dragging empty space moves the whole picture by exactly that much")
+    let under = graph.world(CGPoint(x: 600, y: 200))
+    graph.zoom(by: 1.5, about: CGPoint(x: 600, y: 200))
+    let after = graph.screen(under)
+    check(abs(after.x - 600) < 0.01 && abs(after.y - 200) < 0.01, "pointer: zooming keeps what is under the pointer under the pointer")
+    graph.zoom(by: 1000, about: .zero)
+    graph.zoom(by: 0.000001, about: .zero)
+    check(graph.zoom == GraphController.zoomRange.lowerBound, "pointer: zoom stops at its limits")
+    click(CGPoint(x: 5, y: 5), clicks: 2)
+    for _ in 0..<200 { graph.frame(at: now, size: size) }
+    check(!graph.userMoved && entities.allSatisfy { inView.contains(at($0.id)) }, "pointer: a double-click on empty space brings everything back into view")
+    click(CGPoint(x: 5, y: 5))
+    check(selected == nil && graph.plusCentre == nil, "pointer: a click on empty space clears the selection")
+  }
+
+  /// Puts the graph in a real window, kept off screen, and gives mouse events to whichever view
+  /// the window picks for each point, to check they reach the graph at all. The window here moves when its background is dragged,
+  /// which is what used to swallow every drag.
+  private static func graphWindow() {
+    MainActor.assumeIsolated {
+      _ = NSApplication.shared
+      let now = Date()
+      let entities = ["a", "b", "c"].map { Entity(id: $0, kind: .project, name: $0, firstSeen: now, lastSeen: now, seenCount: 2) }
+      let edges = [GraphEdge(a: "a", b: "b", weight: 1, how: "")]
+      let graph = GraphController()
+      final class Seen { var selection: String?; var links: [(String, String)] = [] }
+      let seen = Seen()
+      func content() -> some View {
+        GraphCanvas(
+          entities: entities, edges: edges,
+          selection: Binding(get: { seen.selection }, set: { seen.selection = $0 }),
+          onLink: { seen.links.append(($0, $1)) }, prepared: graph
+        )
+        .frame(width: 700, height: 500)
+      }
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+        styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+      window.isMovableByWindowBackground = true
+      window.isReleasedWhenClosed = false
+      let host = NSHostingView(rootView: content())
+      window.contentView = host
+      host.layoutSubtreeIfNeeded()
+      func settle() {
+        host.rootView = content()
+        host.layoutSubtreeIfNeeded()
+        host.display()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      }
+      settle()
+
+      func surface(in view: NSView) -> GraphPointerSurface.Surface? {
+        if let found = view as? GraphPointerSurface.Surface { return found }
+        for child in view.subviews { if let found = surface(in: child) { return found } }
+        return nil
+      }
+      guard let pad = surface(in: host), graph.size.width > 0 else {
+        check(false, "window: the graph and its mouse surface are in the window")
+        return
+      }
+      func inWindow(_ point: CGPoint) -> CGPoint { pad.convert(point, to: nil) }
+      func hit(_ point: CGPoint) -> NSView? {
+        host.hitTest(host.superview?.convert(inWindow(point), from: nil) ?? inWindow(point))
+      }
+      let onDot = graph.screenPosition(of: "a")!
+      check(hit(onDot) === pad && hit(CGPoint(x: 30, y: 30)) === pad, "window: a press on the graph lands on its mouse surface")
+      check(!pad.mouseDownCanMoveWindow, "window: a drag on the graph does not move the window")
+      check(hit(CGPoint(x: 700 - 24, y: 500 - 24)) !== pad, "window: the fit button sits above the graph and takes its own clicks")
+
+      var number = 0
+      func send(_ type: NSEvent.EventType, _ point: CGPoint) {
+        number += 1
+        guard let event = NSEvent.mouseEvent(
+          with: type, location: inWindow(point), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: window.windowNumber, context: nil, eventNumber: number, clickCount: 1, pressure: 1)
+        else { return }
+        // A window that is not on screen hands out no mouse events, so each one is given straight
+        // to whichever view the window would have picked for that point.
+        guard let view = hit(point) else { return }
+        switch type {
+        case .leftMouseDown: view.mouseDown(with: event)
+        case .leftMouseDragged: view.mouseDragged(with: event)
+        default: view.mouseUp(with: event)
+        }
+      }
+      send(.leftMouseDown, onDot)
+      send(.leftMouseUp, onDot)
+      settle()
+      check(seen.selection == "a" && graph.plusCentre != nil, "window: a mouse click on a dot selects it")
+
+      guard let plus = graph.plusCentre, let other = graph.screenPosition(of: "c") else { return }
+      send(.leftMouseDown, plus)
+      send(.leftMouseDragged, CGPoint(x: (plus.x + other.x) / 2, y: (plus.y + other.y) / 2))
+      send(.leftMouseDragged, other)
+      let midway = graph.linkFrom == "a" && graph.linkTarget == "c"
+      send(.leftMouseUp, other)
+      settle()
+      check(midway && seen.links.count == 1 && seen.links.first?.0 == "a" && seen.links.first?.1 == "c", "window: a mouse drag from the plus onto another dot links the two")
+      window.close()
+    }
   }
 
   private final class Counter: @unchecked Sendable {

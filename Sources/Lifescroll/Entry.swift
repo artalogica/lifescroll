@@ -42,6 +42,18 @@ enum Entry {
       for name in written { print(name) }
       exit(written.isEmpty ? 1 : 0)
     }
+    // `--render-graph <database> <png>` draws the Projects window from a database file. Use a copy.
+    if let flag = CommandLine.arguments.firstIndex(of: "--render-graph"),
+      CommandLine.arguments.indices.contains(flag + 2)
+    {
+      let done = MainActor.assumeIsolated { () -> Bool in
+        _ = NSApplication.shared
+        return UIPreview.renderGraph(
+          database: CommandLine.arguments[flag + 1], to: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+      }
+      print(done ? "written" : "failed")
+      exit(done ? 0 : 1)
+    }
     #endif
     // `--ocr-test [count]` reads the text off the newest stored screenshots and reports timing and size.
     // It prints numbers only, never the text itself, and makes no network calls.

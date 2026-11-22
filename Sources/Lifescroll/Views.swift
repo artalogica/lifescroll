@@ -670,6 +670,8 @@ struct GraphView: View {
   @State private var kind: EntityKind = .project
   @State var selection: String?
   @State var showsGraph = true
+  /// A graph set up by the caller to show one particular moment, for previews.
+  var preparedGraph: GraphController? = nil
   @State private var newName = ""
   @State private var newKind: EntityKind = .project
 
@@ -731,18 +733,25 @@ struct GraphView: View {
             } else {
               GraphCanvas(
                 entities: graph.entities, edges: graph.edges, selection: $selection,
-                onLink: { model.link($0, $1) })
+                onLink: { model.link($0, $1) }, prepared: preparedGraph)
             }
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .glassCard(padding: 0)
 
-          if let selection, let detail = model.detail(forEntity: selection) {
-            EntityDetailView(detail: detail, open: { self.selection = $0 }, stacked: true)
-              .frame(width: 340)
-              .frame(maxHeight: .infinity, alignment: .topLeading)
-              .glassCard(padding: 0)
+          // The panel is always there, so the graph never changes size, and so never shifts under
+          // the pointer, when a dot is clicked.
+          Group {
+            if let selection, let detail = model.detail(forEntity: selection) {
+              EntityDetailView(detail: detail, open: { self.selection = $0 }, stacked: true)
+            } else {
+              GraphGuide()
+            }
           }
+          .frame(maxHeight: .infinity, alignment: .topLeading)
+          .glassCard(padding: 0)
+          // After the card, which would otherwise stretch to take half the window.
+          .frame(width: 320)
         }
       } else {
       HStack(alignment: .top, spacing: 14) {
@@ -795,7 +804,7 @@ struct GraphView: View {
     }
     .padding(18)
     .padding(.top, Glass.titleBarHeight)
-    .frame(minWidth: 780, minHeight: 500)
+    .frame(minWidth: 860, minHeight: 520)
     .glassPanel()
     .onChange(of: kind) { selection = nil }
     // The list used to be a system list, which moved its selection with the arrow keys. These
@@ -813,6 +822,40 @@ struct GraphView: View {
         .accessibilityHidden(true)
       }
     }
+  }
+}
+
+/// What the panel beside the graph says while nothing is selected: how to get around.
+struct GraphGuide: View {
+  private let lines: [(String, String)] = [
+    ("Click a dot", "to see what it is linked to."),
+    ("Drag the +", "that appears beside it onto another dot to link the two. Or click the +, then click the other dot."),
+    ("Drag a dot", "to move it, or drag empty space to move the whole picture."),
+    ("Pinch", "or hold Command and scroll to zoom. Scroll with two fingers to pan."),
+    ("Double-click", "empty space to bring everything back into view."),
+  ]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Getting around")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(Glass.ink)
+      ForEach(lines, id: \.0) { line in
+        (Text(line.0).fontWeight(.semibold).foregroundColor(Glass.ink)
+          + Text(" " + line.1).foregroundColor(Glass.soft))
+          .font(.system(size: 12.5))
+          .lineSpacing(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Text("Entries joined by links gather into clusters. Entries with no links yet sit around the outside.")
+        .font(.system(size: 12))
+        .lineSpacing(2)
+        .foregroundStyle(Glass.faint)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 4)
+    }
+    .padding(18)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -1147,13 +1190,18 @@ final class WindowManager {
   }
 
   func showGraph() {
-    show(id: "graph", title: "Lifescroll Projects and People", size: NSSize(width: 880, height: 580)) {
+    // Dragging on this window pans the graph and moves its dots, so it is moved by its top edge only.
+    show(
+      id: "graph", title: "Lifescroll Projects and People", size: NSSize(width: 1100, height: 700),
+      movableByBackground: false
+    ) {
       GraphView()
     }
   }
 
   private func show<Content: View>(
-    id: String, title: String, size: NSSize, @ViewBuilder content: () -> Content
+    id: String, title: String, size: NSSize, movableByBackground: Bool = true,
+    @ViewBuilder content: () -> Content
   ) {
     if windows[id] == nil {
       let window = NSWindow(
@@ -1168,7 +1216,7 @@ final class WindowManager {
       window.isOpaque = false
       window.backgroundColor = .clear
       window.appearance = NSAppearance(named: .darkAqua)
-      window.isMovableByWindowBackground = true
+      window.isMovableByWindowBackground = movableByBackground
       window.isReleasedWhenClosed = false
       // Each view leaves `Glass.titleBarHeight` clear at its top for the window buttons. Ignoring the
       // system's own inset here means that space is counted once, whether or not the system adds one.
