@@ -351,7 +351,7 @@ enum DeadlineParser {
 // MARK: - The index of projects, people, documents and topics
 
 enum EntityMatching {
-  /// Lowercased, punctuation dropped, spaces collapsed: "15-440: P3" and "15 440 p3" are the same name.
+  /// Lowercased, punctuation dropped, spaces collapsed: "CS-101: Lab 2" and "cs 101 lab 2" are the same name.
   static func normalize(_ name: String) -> String {
     let characters = name.lowercased().unicodeScalars.map {
       CharacterSet.alphanumerics.contains($0) ? Character($0) : " "

@@ -188,7 +188,7 @@ enum SelfTest {
   private static func storage() {
     guard let store = try? Store.inMemory() else { return check(false, "storage: open in-memory store") }
 
-    var task = TaskItem(title: "Write 440 report", deadline: now.addingTimeInterval(3600), importance: 0.9, firstSeen: now, lastSeen: now)
+    var task = TaskItem(title: "Write lab report", deadline: now.addingTimeInterval(3600), importance: 0.9, firstSeen: now, lastSeen: now)
     task.url = "https://example.edu/assignments/3"
     store.save(task)
     check(store.task(id: task.id) == task, "storage: a task reads back unchanged")
@@ -318,9 +318,9 @@ enum SelfTest {
 
   private static let extractionFixture = """
     {"summary":"Reading a course page, then watching a talk.",
-     "activities":[{"app":"Chrome","title":"15-440 P3","description":"Reading the handout","category":"study"}],
+     "activities":[{"app":"Chrome","title":"CS-101 Lab 2","description":"Reading the handout","category":"study"}],
      "commitments":[
-       {"title":"Submit P3 checkpoint","detail":"Checkpoint due Friday","evidence":"Due Fri 11:59pm","source_app":"Chrome","url":"https://example.edu/p3","deadline":"2026-11-27T23:59","waiting_person":"","confidence":"high","is_users_own":true},
+       {"title":"Submit lab checkpoint","detail":"Checkpoint due Friday","evidence":"Due Fri 11:59pm","source_app":"Chrome","url":"https://example.edu/lab2","deadline":"2026-11-27T23:59","waiting_person":"","confidence":"high","is_users_own":true},
        {"title":"Try this productivity hack","detail":"From an article","evidence":"Headline","source_app":"Chrome","url":"","deadline":"","waiting_person":"","confidence":"high","is_users_own":false},
        {"title":"Maybe email someone","detail":"Unclear","evidence":"Blurry","source_app":"Mail","url":"","deadline":"","waiting_person":"","confidence":"low","is_users_own":true}],
      "completions":[{"description":"Sent reply to TA","evidence":"Message sent banner"}],
@@ -330,9 +330,9 @@ enum SelfTest {
   private static func decoding() {
     let extraction = try? JSONCoding.decoder.decode(Extraction.self, from: Data(extractionFixture.utf8))
     check(extraction?.commitments.count == 3 && extraction?.content.first?.topic == "distributed consensus", "decoding: the reading model's JSON decodes")
-    check(extraction?.actionableCommitments.map(\.title) == ["Submit P3 checkpoint"], "decoding: other people's jobs and low-confidence guesses are dropped")
+    check(extraction?.actionableCommitments.map(\.title) == ["Submit lab checkpoint"], "decoding: other people's jobs and low-confidence guesses are dropped")
 
-    let merge = #"{"operations":[{"op":"create","task_id":"","title":"Submit P3 checkpoint","detail":"d","why":"Due Friday night","deadline":"2026-11-27T23:59","waiting_person":"","url":"https://example.edu/p3","source_app":"Chrome","importance":0.9,"est_minutes":120,"reason":"new"}]}"#
+    let merge = #"{"operations":[{"op":"create","task_id":"","title":"Submit lab checkpoint","detail":"d","why":"Due Friday night","deadline":"2026-11-27T23:59","waiting_person":"","url":"https://example.edu/lab2","source_app":"Chrome","importance":0.9,"est_minutes":120,"reason":"new"}]}"#
     let result = try? JSONCoding.decoder.decode(MergeResult.self, from: Data(merge.utf8))
     check(result?.operations.first?.estMinutes == 120 && result?.operations.first?.taskId == "", "decoding: the merging model's JSON decodes")
 
@@ -359,7 +359,7 @@ enum SelfTest {
     store.save(dismissed)
 
     let input = analyzer.mergeInput(extraction, now: now) ?? ""
-    check(input.contains("Submit P3 checkpoint") && !input.contains("productivity hack"), "analyzer: only actionable commitments reach Sonnet")
+    check(input.contains("Submit lab checkpoint") && !input.contains("productivity hack"), "analyzer: only actionable commitments reach Sonnet")
     check(input.contains("Old thing") && input.contains("dismissed"), "analyzer: dismissed tasks are sent so they are not recreated")
     check(!input.contains("Sent reply to TA"), "analyzer: completions are dropped when there are no open tasks to close")
 
@@ -571,7 +571,7 @@ enum SelfTest {
     let masked = Redactor.mask("key sk-ant-api03-AbCdEf1234567890XyZ and ghp_abcdefghijklmnopqrstuvwx1234 card 4111 1111 1111 1111 token QWxhZGRpbjpvcGVuIHNlc2FtZQ7x92Kd0aB3cD5eF8gH1jK4mN hash 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
     check(!masked.contains("AbCdEf1234567890") && !masked.contains("ghp_abc") && !masked.contains("4111") && !masked.contains("QWxhZGRpbjpvcGVu") && !masked.contains("9f86d081884c"), "text: keys, tokens and card numbers are masked")
     check(masked.contains("[hidden key]") && masked.contains("[hidden card number]") && masked.contains("[hidden token]"), "text: masked items leave a marker behind")
-    let ordinary = "Submit the P3 checkpoint by Friday 5pm. Order 1795000000000 at /Users/someone/Documents/project/Sources/Lifescroll/Analyzer.swift, call 412-555-0100. See test_that_the_parser_handles_empty_input_correctly_every_time and how-to-build-a-distributed-consensus-protocol-from-scratch, commit 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12."
+    let ordinary = "Submit the lab checkpoint by Friday 5pm. Order 1795000000000 at /Users/someone/Documents/project/Sources/Lifescroll/Analyzer.swift, call 412-555-0100. See test_that_the_parser_handles_empty_input_correctly_every_time and how-to-build-a-distributed-consensus-protocol-from-scratch, commit 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12."
     check(Redactor.mask(ordinary) == ordinary, "text: ordinary sentences, paths, long numbers, long names, link slugs and commit ids are left alone")
     check(Redactor.passesLuhn([4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]) && !Redactor.passesLuhn([4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]), "text: card numbers are told apart by their checksum")
 
@@ -636,7 +636,7 @@ enum SelfTest {
     check(CaptureExclusion.excludes(app: "1Password", bundleID: "com.1password.1password", title: "Vault", keywords: never, ownBundleID: own), "review: a password manager is removed from the capture wherever it sits")
     check(CaptureExclusion.excludes(app: "Google Chrome", bundleID: "com.google.Chrome", title: "New Tab - Google Chrome (Incognito)", keywords: never, ownBundleID: own), "review: a private browsing window is removed by its title")
     check(CaptureExclusion.excludes(app: "Lifescroll", bundleID: own, title: "Lifescroll Tasks", keywords: never, ownBundleID: own), "review: Lifescroll's own windows are removed, so it never reads its own cards")
-    check(!CaptureExclusion.excludes(app: "Google Chrome", bundleID: "com.google.Chrome", title: "15-440 handout", keywords: never, ownBundleID: own) && !CaptureExclusion.excludes(app: "Notes", bundleID: "com.apple.Notes", title: "Ideas", keywords: [], ownBundleID: nil), "review: ordinary windows stay in the capture")
+    check(!CaptureExclusion.excludes(app: "Google Chrome", bundleID: "com.google.Chrome", title: "CS-101 handout", keywords: never, ownBundleID: own) && !CaptureExclusion.excludes(app: "Notes", bundleID: "com.apple.Notes", title: "Ideas", keywords: [], ownBundleID: nil), "review: ordinary windows stay in the capture")
 
     // Found in review: the catch-all mask must tell generated secrets from long written names.
     check(Redactor.looksGenerated("QWxhZGRpbjpvcGVuIHNlc2FtZQ7x92Kd0aB3cD5eF8gH1jK4mN") && !Redactor.looksGenerated("test_that_the_parser_handles_empty_input_correctly_every_time") && !Redactor.looksGenerated("how-to-build-a-distributed-consensus-protocol-from-scratch"), "review: only machine-made runs are treated as secrets")
@@ -1237,33 +1237,33 @@ enum SelfTest {
   }
 
   private static func knowledgeGraph() {
-    check(EntityMatching.normalize("15-440: P3") == "15 440 p3" && EntityMatching.normalize("  ") == "", "graph: names are normalised")
+    check(EntityMatching.normalize("CS-101: Lab 2") == "cs 101 lab 2" && EntityMatching.normalize("  ") == "", "graph: names are normalised")
 
     guard let store = try? Store.inMemory() else { return check(false, "graph: open in-memory store") }
     check((try? store.migrate()) != nil, "graph: migration can run again safely")
 
-    let project = Entity(kind: .project, name: "15-440 Project 3", aliases: ["p3-raft"], summary: "Raft in Go", firstSeen: now, lastSeen: now)
+    let project = Entity(kind: .project, name: "CS-101 Lab 2", aliases: ["lab2-raft"], summary: "Raft in Go", firstSeen: now, lastSeen: now)
     store.save(project)
     check(store.entity(id: project.id) == project, "graph: an entry reads back unchanged")
-    check(store.matchEntity(kind: .project, name: "15 440 project 3")?.id == project.id, "graph: matches by name without a model")
-    check(store.matchEntity(kind: .project, name: "P3 Raft")?.id == project.id, "graph: matches by alias")
-    check(store.matchEntity(kind: .topic, name: "15-440 Project 3") == nil, "graph: kinds are kept apart")
+    check(store.matchEntity(kind: .project, name: "cs 101 lab 2")?.id == project.id, "graph: matches by name without a model")
+    check(store.matchEntity(kind: .project, name: "Lab2 Raft")?.id == project.id, "graph: matches by alias")
+    check(store.matchEntity(kind: .topic, name: "CS-101 Lab 2") == nil, "graph: kinds are kept apart")
 
-    let asked = [mention("440 P3", "project"), mention("Maya Chen", "person"), mention("YouTube", "topic"), mention("Ghost", "project")]
+    let asked = [mention("101 Lab", "project"), mention("Maya Chen", "person"), mention("YouTube", "topic"), mention("Ghost", "project")]
     let tally = EntityResolution.apply([
-      decision("440 P3", "project", "same_as", id: project.id),
+      decision("101 Lab", "project", "same_as", id: project.id),
       decision("Maya Chen", "person", "new", name: "Maya Chen", summary: "Project partner"),
       decision("YouTube", "topic", "ignore"),
       decision("Ghost", "project", "same_as", id: "no-such-id"),
       decision("Never asked", "project", "new", name: "Injected"),
     ], asked: asked, to: store, now: now)
     check(tally == EntityTally(created: 1, aliased: 1, ignored: 1, skipped: 2), "graph: decisions create, alias and ignore; bad ids and unasked names are skipped")
-    check(store.entity(id: project.id)?.aliases == ["p3-raft", "440 P3"], "graph: a second name becomes an alias")
+    check(store.entity(id: project.id)?.aliases == ["lab2-raft", "101 Lab"], "graph: a second name becomes an alias")
     check(store.entities(kind: .topic).isEmpty && store.matchEntity(kind: .topic, name: "youtube")?.ignored == true, "graph: ignored names are remembered but hidden")
     check(store.matchEntity(kind: .project, name: "Injected") == nil, "graph: nothing is created for a name that was not asked about")
     guard let maya = store.matchEntity(kind: .person, name: "maya chen") else { return check(false, "graph: new person exists") }
 
-    let seen = [mention("440 P3", "project", "Debugged leader election"), mention("Maya Chen", "person", "Messaged about the checkpoint"), mention("YouTube", "topic")]
+    let seen = [mention("101 Lab", "project", "Debugged leader election"), mention("Maya Chen", "person", "Messaged about the checkpoint"), mention("YouTube", "topic")]
     EntityResolution.recordSightings(seen, observationID: 1, at: now, in: store)
     EntityResolution.recordSightings(seen, observationID: 1, at: now, in: store)
     check(store.entity(id: project.id)?.seenCount == 1, "graph: one sighting per reading, however often it is recorded")
@@ -1272,10 +1272,10 @@ enum SelfTest {
     check(store.links(entityID: project.id).isEmpty, "graph: being seen in the same reading no longer connects two entries")
 
     let stated = [
-      Extraction.Relation(from: "Maya Chen", to: "440 P3", how: "works on", evidence: "Posted in the project channel"),
+      Extraction.Relation(from: "Maya Chen", to: "101 Lab", how: "works on", evidence: "Posted in the project channel"),
       Extraction.Relation(from: "Maya Chen", to: "YouTube", how: "watches", evidence: "A tab was open"),
       Extraction.Relation(from: "Maya Chen", to: "Someone Unknown", how: "knows", evidence: "x"),
-      Extraction.Relation(from: "440 P3", to: "Maya Chen", how: "has member", evidence: "  "),
+      Extraction.Relation(from: "101 Lab", to: "Maya Chen", how: "has member", evidence: "  "),
     ]
     check(EntityResolution.recordRelations(stated, mentions: seen, observationID: 1, at: now, in: store) == 1, "graph: only a stated relationship between two indexed entries, with evidence, becomes a link")
     check(EntityResolution.recordRelations(stated, mentions: seen, observationID: 1, at: now, in: store) == 0, "graph: recording the same reading twice changes nothing")
@@ -1298,23 +1298,23 @@ enum SelfTest {
     check(GraphLayout.positions(nodes: [], edges: []).isEmpty && GraphLayout.positions(nodes: ["only"], edges: []) == ["only": .zero], "graph: empty and single-node graphs are handled")
 
     TaskMerging.apply([
-      MergeResult.Operation(op: "create", taskId: "", title: "Submit P3 checkpoint", detail: "", why: "", deadline: "", waitingPerson: "", url: "", sourceApp: "", importance: 0.9, estMinutes: 60, reason: "test", project: "440 p3"),
+      MergeResult.Operation(op: "create", taskId: "", title: "Submit lab checkpoint", detail: "", why: "", deadline: "", waitingPerson: "", url: "", sourceApp: "", importance: 0.9, estMinutes: 60, reason: "test", project: "101 lab"),
       MergeResult.Operation(op: "create", taskId: "", title: "Buy groceries", detail: "", why: "", deadline: "", waitingPerson: "", url: "", sourceApp: "", importance: 0.3, estMinutes: 30, reason: "test", project: "Unknown project"),
     ], to: store, now: now)
-    check(store.tasks(projectID: project.id).map(\.title) == ["Submit P3 checkpoint"], "graph: a task links to its project through an alias")
+    check(store.tasks(projectID: project.id).map(\.title) == ["Submit lab checkpoint"], "graph: a task links to its project through an alias")
     check(store.tasks(status: .open).first { $0.title == "Buy groceries" }?.projectID == "", "graph: an unknown project name links to nothing")
 
     let analyzer = Analyzer(store: store)
-    let json = #"{"summary":"s","activities":[],"completions":[],"content":[],"commitments":[{"title":"Submit P3 checkpoint","detail":"d","evidence":"e","source_app":"Chrome","url":"","deadline":"","waiting_person":"","confidence":"high","is_users_own":true,"project":"440 P3"}],"entities":[{"name":"p3-raft","kind":"project","context":"c"},{"name":"Raft paper","kind":"document","context":"Read section 5"},{"name":"raft  PAPER","kind":"document","context":"dup"},{"name":"Thing","kind":"gadget","context":"bad kind"}]}"#
+    let json = #"{"summary":"s","activities":[],"completions":[],"content":[],"commitments":[{"title":"Submit lab checkpoint","detail":"d","evidence":"e","source_app":"Chrome","url":"","deadline":"","waiting_person":"","confidence":"high","is_users_own":true,"project":"101 Lab"}],"entities":[{"name":"lab2-raft","kind":"project","context":"c"},{"name":"Raft paper","kind":"document","context":"Read section 5"},{"name":"raft  PAPER","kind":"document","context":"dup"},{"name":"Thing","kind":"gadget","context":"bad kind"}]}"#
     guard let extraction = try? JSONCoding.decoder.decode(Extraction.self, from: Data(json.utf8)) else { return check(false, "graph: reading with entities decodes") }
-    check(extraction.commitments.first?.project == "440 P3" && extraction.entities?.count == 4, "graph: a reading with entities decodes")
+    check(extraction.commitments.first?.project == "101 Lab" && extraction.entities?.count == 4, "graph: a reading with entities decodes")
     let unknown = analyzer.unknownMentions(extraction)
     check(unknown.map(\.name) == ["Raft paper"], "graph: only names not already known go to Sonnet")
     let input = analyzer.entityInput(unknown: unknown) ?? ""
-    check(input.contains("Raft paper") && input.contains("15-440 Project 3") && input.contains(project.id), "graph: Sonnet sees the new name and the existing entries")
+    check(input.contains("Raft paper") && input.contains("CS-101 Lab 2") && input.contains(project.id), "graph: Sonnet sees the new name and the existing entries")
     check(!input.contains("YouTube"), "graph: ignored names are not offered as merge targets")
     check(analyzer.entityInput(unknown: []) == nil, "graph: no Sonnet call when every name is known")
-    check((analyzer.mergeInput(extraction, now: now) ?? "").contains("\"project\" : \"440 P3\""), "graph: the task merge is told which project a commitment belongs to")
+    check((analyzer.mergeInput(extraction, now: now) ?? "").contains("\"project\" : \"101 Lab\""), "graph: the task merge is told which project a commitment belongs to")
 
     let decisions = #"{"decisions":[{"mention":"Raft paper","kind":"document","decision":"new","entity_id":"","name":"In Search of an Understandable Consensus Algorithm","summary":"The Raft paper","reason":"r"}]}"#
     let decoded = try? JSONCoding.decoder.decode(EntityDecisions.self, from: Data(decisions.utf8))

@@ -1,62 +1,110 @@
+<div align="center">
+
 # Lifescroll
 
-A Mac menu bar app that watches your screen, works out what you left unfinished, and shows you one
-card at a time saying what to do next. When you have been scrolling too long, it pushes the top card
-at you as a notification.
+**A to-do list you never have to write.**
 
-Everything is stored on this Mac. Screenshots go to the Claude API to be read; nothing else leaves.
+Lifescroll sits in your Mac's menu bar, reads what is on your screen, works out what you left
+unfinished, and shows you one card at a time saying what to do next.
 
-## What it looks like
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
+![Swift 5.10](https://img.shields.io/badge/Swift-5.10-orange?logo=swift&logoColor=white)
+![No Xcode needed](https://img.shields.io/badge/Xcode-not%20needed-blue)
+![Powered by Claude](https://img.shields.io/badge/powered%20by-Claude-d97757)
 
-These are drawn from invented sample data by `--render-ui`, described under "Check it". None of it is real.
+[Features](#features) ·
+[Quick start](#quick-start) ·
+[Using it](#using-it) ·
+[How it works](#how-it-works) ·
+[Privacy](#privacy) ·
+[Development](#development)
 
-| A task card | A suggestion | Which matters more |
-|---|---|---|
-| ![A task card in the popover](docs/screenshots/popover-task-dark.png) | ![A suggestion card in the popover](docs/screenshots/popover-suggestion-dark.png) | ![A question asking which of two tasks matters more](docs/screenshots/popover-compare-dark.png) |
+<br>
 
-All tasks, ranked:
+<img src="docs/screenshots/popover-task-dark.png" width="32%" alt="A task card in the popover">
+<img src="docs/screenshots/popover-suggestion-dark.png" width="32%" alt="A suggestion card in the popover">
+<img src="docs/screenshots/popover-compare-dark.png" width="32%" alt="A question asking which of two tasks matters more">
 
-![The All tasks window](docs/screenshots/tasks-dark.png)
+</div>
 
-Projects and people, with one entry selected:
+<br>
 
-![The graph with a project selected](docs/screenshots/graph-selected-dark.png)
+> [!NOTE]
+> Every screenshot on this page is drawn from invented sample data. None of it is anyone's real
+> screen, tasks or contacts.
 
-A group of entries selected together:
+## Why
 
-![The graph with four entries selected](docs/screenshots/graph-group-dark.png)
+Most task apps fail at the same step: you have to remember to write the task down. Lifescroll skips
+that step. It notices the email you opened and did not answer, the assignment page you keep going
+back to, the pull request you left half-reviewed, and puts each on a card.
 
-## Run it
+It is also honest about how people actually work. You will scroll. So the feed mixes things worth
+doing with things worth enjoying, and when you have been scrolling too long it nudges you with the
+one card that matters most.
+
+## Features
+
+- **Tasks appear by themselves.** Lifescroll reads your screen every ten minutes and adds what you
+  left unfinished. You can still add one by hand.
+- **One card at a time.** Each card says what to do and why now, with a deadline, a time estimate
+  and one main button: **Start**.
+- **Ranked for you, corrected by you.** Importance, deadlines and who is waiting set the order.
+  Now and then it asks "which matters more?", and your answer outweighs its guess.
+- **A feed for life, not just work.** Suggestions (a paper, an essay, a talk) are found by Claude
+  searching the web for things like what you already read and watch.
+- **Nudges when you drift.** Scroll too long and the top card arrives as a notification.
+- **Three modes.** Pure dopamine, Balanced, or Lock in, depending on the day you are having.
+- **It learns what is not a task.** Mark a card **Not a task** and things like it stop appearing.
+- **A map of your work.** Projects, people, documents and topics become a live graph you can
+  explore, rearrange and link by hand.
+- **Local by default.** Everything is stored on your Mac. Only screen text goes to Claude to be read.
+
+## Quick start
+
+**You need:** macOS 14 or later, Apple's Command Line Tools (`xcode-select --install`; full Xcode is
+not needed), and a [Claude API key](https://console.anthropic.com/).
 
 ```bash
-./scripts/build-app.sh
+git clone https://github.com/artalogica/lifescroll.git
+```
+
+```bash
+cd lifescroll && ./scripts/build-app.sh
 ```
 
 ```bash
 open build/Lifescroll.app
 ```
 
-First run:
+Then, the first time it runs:
 
-1. Allow **Screen Recording** when macOS asks, then quit Lifescroll (power icon in its popover) and open it again.
-2. Allow notifications when asked.
-3. Click the menu bar icon, open Settings (gear), and paste a Claude API key. It is saved in your Keychain.
-4. Optional: allow Accessibility in Settings for more reliable window titles.
+1. Allow **Screen Recording** when macOS asks, quit Lifescroll (the power icon in its popover) and
+   open it again.
+2. Allow notifications.
+3. Click the menu bar icon, open **Settings** (the gear) and paste your Claude API key. It is saved
+   in your Keychain.
+4. Optional: allow **Accessibility** in Settings for more reliable window titles.
 
-### Keeping permissions across rebuilds
+Your first cards appear after the first reading, about ten minutes in.
+
+<details>
+<summary><b>Rebuilding often? Keep your permissions between builds</b></summary>
+
+<br>
 
 macOS grants Screen Recording, Accessibility and Keychain access to one signed copy of an app.
-Without a signing certificate the build is signed ad-hoc, every rebuild counts as a new app, and
-System Settings goes on showing the old copy as allowed while the new one has nothing.
+Without a signing certificate each rebuild counts as a new app, and System Settings goes on showing
+the old copy as allowed while the new one has nothing.
 
 Create a certificate once and the build script signs with it from then on:
 
 1. Open **Keychain Access**.
-2. In the menu bar choose **Keychain Access › Certificate Assistant › Create a Certificate…**
+2. Choose **Keychain Access › Certificate Assistant › Create a Certificate…**
 3. Name it `Lifescroll Dev`, set Identity Type to **Self-Signed Root** and Certificate Type to
    **Code Signing**, then create it.
 
-Then rebuild, clear the grants left by earlier builds, and allow the permissions one last time:
+Rebuild, clear the grants left by earlier builds, and allow the permissions one last time:
 
 ```bash
 ./scripts/build-app.sh
@@ -74,158 +122,225 @@ tccutil reset Accessibility local.lifescroll.Lifescroll
 open build/Lifescroll.app
 ```
 
-The first signed build asks whether `codesign` may use the new key; choose Always Allow. The script
-prints which way it signed. To sign with a different identity, set `LIFESCROLL_SIGN_IDENTITY`.
+The first signed build asks whether `codesign` may use the new key; choose **Always Allow**. The
+script prints which way it signed. To sign with a different identity, set `LIFESCROLL_SIGN_IDENTITY`.
 
-## How it works
+</details>
 
-| Loop | How often | What it does |
-|---|---|---|
-| Fast | every 5 s | Logs the front app and window title. Counts time on "scrolling" apps and fires the nudge. No model. Stops, along with capture, while the screen is locked or the display is off. |
-| Capture | every 10 s | Captures the display under the pointer, skipping unchanged frames and excluded apps, and stores a 1280-pixel copy. About every 30 s, and whenever a new window comes to the front, the text is read off the full-size capture on this Mac. |
-| Read | every 10 min | Claude Haiku 5.5 is sent the text of up to 12 key screens, each cut down to lines not already sent, and reports commitments, completions and content seen. A line counts as already sent only within the same window. |
-| Index | after each read | Projects, people, documents and topics Haiku named are matched against the index by name. Claude Sonnet 5.5 is called only for names it has not seen before. |
-| Merge | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project, and writes each card's "why now" line. |
-| Suggest | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 searches the web itself (up to 5 searches) for things like what you have been watching and reading, steered toward the sites you already use. The Hacker News front page is added for picks outside your interests, and Sonnet chooses up to 8 worth a card. If the web search finds nothing, it falls back to planned searches of arXiv and Hacker News. |
+## Using it
 
-Capture is text-first. Text recognition runs on-device (Apple's Vision framework, with language
-detection on), so Claude is sent words, not pictures, for most screens. The three screens with the
-least text in a reading, if under 800 characters, also get their screenshot sent. On 12 real
-screenshots this came to about half the tokens of sending every image.
+### The feed
 
-What is kept out and cleaned up:
+Click the menu bar icon to see the top card. Scroll with the trackpad, mouse wheel or arrow keys to
+see the next; after the last card the first comes back.
 
-- Windows matching a "never capture" word, and Lifescroll's own windows, are removed from the
-  picture by the system before it is taken, wherever they sit on screen. If such a window is in
-  front, the capture is skipped altogether.
-- Things shaped like API keys, tokens and card numbers are masked before the text is stored or
-  sent. This is a safety net for obvious shapes, not a guarantee.
-- Screen text is erased as soon as its reading is done, and erased rows are overwritten in the
-  database file. Screenshots are deleted after three days.
-- Screen text is sent inside `<screen_text>` tags and Haiku is told it is content to report on,
-  never instructions.
+| Button | What it does |
+|---|---|
+| **Start** | Marks the task in progress and opens its link or app. It moves to the front of the feed and shows how long it has been going. |
+| **Done** | Finished. Takes it off the list. |
+| **Pause** | Stops a task in progress and puts it back among the others. |
+| **Not now** | Hides it for three hours. |
+| **Never** | A real task, but you will not do it. Gone for good. |
+| **Not a task** | It never was one. Gone for good, and things like it stop being suggested. |
 
-Suggestions are the enjoyable half of the feed: a paper, an essay, a talk. Opening one or pressing
-"Not for me" removes it and is fed back into the next round of choosing. Sonnet is told never to
-search for your name or your private projects. Links always come from the search results, never
-from text the model wrote. Anthropic charges for each web search on top of tokens; Settings counts
-the searches but does not price them.
-
-Ranking is a hand-written score in `Logic.swift` (`Ranker.score`): importance, deadline urgency, how
-often and how long ago you saw it, whether someone is waiting, and your "which matters more?" picks.
-Your picks can outweigh everything inferred.
-
-The interface is dark smoked glass throughout: a blurred, dark-tinted pane with light text, so it
-reads the same over a white wallpaper as a dark one and in either system appearance. Colour is used
-in one place only, the blush on suggestion cards.
-
-Each task card has one main button. **Start** marks the task in progress and opens it, if it has a
-link or an app to open. A task in progress moves to the front of the feed in every mode, shows how
-long it has been going, and swaps its main button to **Done**; **Pause** puts it back among the
-others. Starting, pausing and finishing are all recorded in the `events` table.
-
-The card feed is a loop. Scroll with the trackpad, mouse wheel or arrow keys; after the last card the
-first one comes back. Done and Never take a card out of the loop, and Not now hides it for three hours.
-
-Sometimes a card is not a task at all. **Not a task**, under the card's buttons, beside each choice
-of a "which matters more" question, and in All tasks, removes it and keeps it as an example. Those
-examples go to Sonnet with every merge, so the same thing, and things of the same kind, stop being
-added. Reopening one from All tasks takes the mark back.
-
-The index is a small knowledge graph of projects, people, documents and topics. Two entries are
-linked only when Haiku reports that a screen showed them to be related, with what it saw as
-evidence: a person posting in a project's channel, a paper about a topic. Being on screen in the
-same ten minutes links nothing. Stating a relationship again in a later reading strengthens it.
-
-The **Projects** button in the popover opens the index as a node graph. Entries joined by links
-gather into clusters. Each cluster keeps clear space around it and sits on a faint backdrop, with
-the name of its best-connected entry in bold, so one section can be told from the next. Entries
-with no links yet sit around the outside. The graph is a live simulation: it opens settled, and
-when something is added or linked the dots ease into their new places.
-
-Click a dot to see its tasks, what it is linked to and how, and a dated log of what you did with
-it. Drag a dot to move it, or drag empty space to move the whole picture. Scroll with two fingers
-to pan; pinch, or hold Command and scroll, to zoom. Until you pan or zoom, the view keeps everything
-in frame by itself; the button in the corner, or a double-click on empty space, goes back to that.
-
-Shift-click dots, or hold Shift and drag a box around them, to select several at once (Command-A
-selects all). Dragging any one of a group moves them all, and dragging the group's plus onto another
-dot links every one of them to it. Esc, or a click on empty space, lets the group go.
-
-To link two entries, select one and drag the plus that appears beside it onto the other: the line
-snaps to a dot when it is close. Or click the plus and then click the other dot; Esc cancels. Each
-link in the panel has a button to remove it. Entries can be added by hand from the row above the
-graph. A List view is one switch away. "Remove from index" hides an entry and stops it being
-re-added.
-
-Modes set both the nudge and the blend of the feed:
+### Modes
 
 | Mode | Nudge | Feed |
 |---|---|---|
-| Pure dopamine | never | three suggestions, then a task |
-| Balanced | after 20 minutes of scrolling | one suggestion after every three tasks |
-| Lock in | after 5 minutes of scrolling | tasks only, and no suggestions are fetched |
+| **Pure dopamine** | never | three suggestions, then a task |
+| **Balanced** | after 20 minutes of scrolling | one suggestion after every three tasks |
+| **Lock in** | after 5 minutes of scrolling | tasks only, and no suggestions are fetched |
 
-## Where things are
+### All tasks
 
-| File | Contents |
+Every task, ranked, with its reason, deadline, estimate and score. Finished and dismissed tasks can
+be reopened from here.
+
+<img src="docs/screenshots/tasks-dark.png" alt="The All tasks window">
+
+### Projects and people
+
+The **Projects** button opens everything Lifescroll has noticed you working with as a graph.
+Entries joined by links gather into clusters, each on its own faint backdrop with its
+best-connected entry in bold. Entries with no links yet sit around the outside.
+
+<img src="docs/screenshots/graph-selected-dark.png" alt="The graph with a project selected">
+
+| To | Do this |
 |---|---|
-| `Sources/Lifescroll/Capture.swift` | Front-window sampling and screenshots |
-| `Sources/Lifescroll/ScreenText.swift` | On-device text recognition, masking of secrets, and trimming repeated lines |
-| `Sources/Lifescroll/Analyzer.swift` | Prompts, JSON schemas, the read and merge steps |
-| `Sources/Lifescroll/Recommendations.swift` | arXiv and Hacker News search, and the plan and pick steps for suggestions |
-| `Sources/Lifescroll/ClaudeClient.swift` | Raw HTTP to the Messages API, Keychain storage |
-| `Sources/Lifescroll/Logic.swift` | Ranking, nudge timing, key-frame choice, applying merge decisions |
-| `Sources/Lifescroll/Store.swift` | The SQLite schema and every query |
-| `Sources/Lifescroll/AppModel.swift` | Timers, card actions, notifications |
-| `Sources/Lifescroll/Views.swift` | Popover, task list, projects and settings |
-| `Sources/Lifescroll/Graph.swift` | The node graph: its layout and drawing |
-| `Sources/Lifescroll/Theme.swift` | The smoked-glass look: panels, cards, pill buttons, switches, chips |
-| `Sources/Lifescroll/Preview.swift` | Draws the interface to images with sample data |
-| `Sources/Lifescroll/SelfTest.swift` | Checks run by `--self-test` |
+| See an entry's tasks, links and history | Click its dot |
+| Link two entries | Drag the **+** beside a selected dot onto another, or click the **+** and then the other dot |
+| Remove a link | Use the × beside it in the side panel |
+| Move a dot, or the whole picture | Drag the dot, or drag empty space |
+| Zoom | Pinch, or hold Command and scroll |
+| Bring everything back into view | Double-click empty space, or use the corner button |
+| Select several | Shift-click dots, or hold Shift and drag a box around them (Command-A selects all) |
+| Move or link a group | Drag any one of them, or drag the group's **+** onto another dot |
+| Add an entry by hand | Type a name in the field above the graph |
 
-Data lives in `~/Library/Application Support/Lifescroll/`: `lifescroll.sqlite` and a `frames/` folder.
-Raw screenshots are deleted after three days. The `events` table records every card shown and every
-response; it is the training data for a future personal ranker.
+<img src="docs/screenshots/graph-group-dark.png" alt="The graph with four entries selected together">
 
-## Check it
+Two entries are linked automatically only when a screen actually showed them to be related: a
+person posting in a project's channel, a paper about a topic. Being on screen at the same time
+links nothing.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Your screen] -->|every 10 s| B[Capture]
+    B -->|on-device text recognition| C[Screen text]
+    C -->|every 10 min| D[Claude Haiku<br>reads]
+    D --> E[Claude Sonnet<br>merges and ranks]
+    D --> F[Projects and<br>people graph]
+    E --> G[Task cards]
+    H[Claude Sonnet<br>searches the web] --> I[Suggestion cards]
+    G --> J[The feed]
+    I --> J
+```
+
+| Step | How often | What happens |
+|---|---|---|
+| **Watch** | every 5 s | Logs the front app and window title, counts time on "scrolling" apps and fires the nudge. No model is involved. Stops while the screen is locked or the display is off. |
+| **Capture** | every 10 s | Captures the display under the pointer, skipping unchanged frames and excluded apps. About every 30 s, and whenever a new window comes forward, the text is read off the capture on your Mac. |
+| **Read** | every 10 min | Claude Haiku 5.5 is sent the text of up to 12 key screens, cut down to lines not already sent, and reports commitments, completions and what you were looking at. |
+| **Index** | after each read | The projects, people, documents and topics Haiku named are matched against the graph by name. Claude Sonnet 5.5 is called only for names not seen before. |
+| **Merge** | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project and writes each card's "why now" line. |
+| **Suggest** | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 searches the web (up to 5 searches) for things like what you have been reading, and chooses up to 8 worth a card. If the search finds nothing, it falls back to arXiv and Hacker News. |
+
+**Text first.** Text recognition runs on-device with Apple's Vision framework, so Claude is sent
+words, not pictures, for most screens. Only the screens with almost no text also send their
+screenshot. On 12 real screenshots this came to about half the tokens of sending every image.
+
+**Ranking** is a hand-written score (`Ranker.score` in `Logic.swift`): importance, deadline
+urgency, how often and how recently you saw it, whether someone is waiting, and your "which matters
+more?" answers.
+
+## Privacy
+
+Lifescroll watches your screen, so this section matters more than any other.
+
+- **Stored on your Mac.** The database and screenshots live in
+  `~/Library/Application Support/Lifescroll/`. There is no account and no server of ours.
+- **What leaves your Mac.** Screen text, and a screenshot for the few screens with almost no text,
+  go to the Claude API to be read. Suggestion searches send topics, never your name or your private
+  project names.
+- **Never-capture list.** Windows matching a word you choose, and Lifescroll's own windows, are
+  removed from the picture by the system before it is taken. If such a window is in front, the
+  capture is skipped altogether.
+- **Secrets are masked.** Things shaped like API keys, tokens and card numbers are masked before
+  text is stored or sent. This is a safety net for obvious shapes, not a guarantee.
+- **Short memory.** Screen text is erased as soon as it has been read, and erased rows are
+  overwritten in the database file. Screenshots are deleted after three days.
+- **Screen text is treated as content.** It is sent to the model marked as material to report on,
+  never as instructions to follow.
+- **Your key, your bill.** Requests go out under your own Claude API key, kept in your Keychain.
+  Anthropic charges for tokens and, separately, for each web search; Settings shows what has been
+  used.
+
+## Development
+
+Lifescroll is a Swift Package with no dependencies beyond the system. It builds with the Command
+Line Tools alone. Those ship without XCTest, so the checks are built into the app:
 
 ```bash
 swift build && .build/debug/Lifescroll --self-test
 ```
 
-Command Line Tools ship without XCTest, so the checks are built into the app.
+<details>
+<summary><b>More commands</b></summary>
 
-To confirm a new build can open your existing data, point it at a copy of the database:
+<br>
+
+Confirm a new build can open your existing data. Point it at a copy, because opening a file brings
+it up to the current schema:
 
 ```bash
 .build/debug/Lifescroll --check-db /path/to/copy.sqlite
 ```
 
-To run one real search against arXiv and Hacker News, with no Claude calls:
-
-```bash
-.build/debug/Lifescroll --fetch-test "distributed consensus"
-```
-
-arXiv answers 429 when requests come too close together, so leave a while between runs.
-
-To see the interface without running the app, draw it to images over a light and a dark backdrop.
-It uses invented sample data and opens nothing of yours:
+Draw the interface to images over a light and a dark backdrop, using invented sample data. This is
+how the screenshots on this page were made:
 
 ```bash
 .build/debug/Lifescroll --render-ui build/ui-preview
 ```
 
-To see how the graph lays out a real index, draw the Projects window from a database file. Give it
-a copy, because opening a file brings it up to the current schema:
+Draw the Projects window from a database file, to see how a real graph lays out. Use a copy:
 
 ```bash
 .build/debug/Lifescroll --render-graph /path/to/copy.sqlite build/graph.png
 ```
 
-To time text recognition on your newest stored screenshots (it prints counts, never the text):
+Run one real search against arXiv and Hacker News, with no Claude calls. arXiv answers 429 when
+requests come too close together, so leave a while between runs:
+
+```bash
+.build/debug/Lifescroll --fetch-test "distributed consensus"
+```
+
+Time text recognition on your newest stored screenshots. It prints counts, never the text:
 
 ```bash
 .build/debug/Lifescroll --ocr-test 12
 ```
+
+</details>
+
+<details>
+<summary><b>Where things are</b></summary>
+
+<br>
+
+| File | Contents |
+|---|---|
+| `Sources/Lifescroll/Capture.swift` | Front-window sampling and screenshots |
+| `Sources/Lifescroll/ScreenText.swift` | On-device text recognition, masking of secrets, trimming repeated lines |
+| `Sources/Lifescroll/Analyzer.swift` | Prompts, JSON schemas, the read and merge steps |
+| `Sources/Lifescroll/Recommendations.swift` | Web search, arXiv and Hacker News, and choosing suggestions |
+| `Sources/Lifescroll/ClaudeClient.swift` | Raw HTTP to the Claude Messages API, Keychain storage |
+| `Sources/Lifescroll/Logic.swift` | Ranking, nudge timing, key-frame choice, applying merge decisions |
+| `Sources/Lifescroll/Store.swift` | The SQLite schema and every query |
+| `Sources/Lifescroll/AppModel.swift` | Timers, card actions, notifications |
+| `Sources/Lifescroll/Views.swift` | Popover, task list, projects and settings |
+| `Sources/Lifescroll/Graph.swift` | The graph: layout, physics, pointer handling and drawing |
+| `Sources/Lifescroll/Theme.swift` | The smoked-glass look: panels, cards, buttons, switches, chips |
+| `Sources/Lifescroll/Preview.swift` | Draws the interface to images with sample data |
+| `Sources/Lifescroll/SelfTest.swift` | The checks run by `--self-test` |
+
+Data lives in `~/Library/Application Support/Lifescroll/`: `lifescroll.sqlite` and a `frames/`
+folder. The `events` table records every card shown and every response to it.
+
+</details>
+
+## Troubleshooting
+
+<details>
+<summary><b>Settings says Screen Recording or Accessibility is off, but System Settings shows it allowed</b></summary>
+
+<br>
+
+The grant belongs to an earlier build. Follow
+[Keep your permissions between builds](#quick-start) once, and it will not happen again.
+
+</details>
+
+<details>
+<summary><b>The build stops with <code>errSecInternalComponent</code></b></summary>
+
+<br>
+
+The keychain refused the signing key for a moment. Run the build again. If macOS asks whether
+`codesign` may use the key, choose **Always Allow**.
+
+</details>
+
+<details>
+<summary><b>No cards are appearing</b></summary>
+
+<br>
+
+Check that a Claude API key is saved in Settings and that Screen Recording is allowed, then give it
+ten minutes: tasks arrive after each reading. The popover's status line says when it last read.
+
+</details>

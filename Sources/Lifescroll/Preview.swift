@@ -87,7 +87,7 @@ enum UIPreview {
     let now = Date()
 
     let project = Entity(
-      kind: .project, name: "Systems project", aliases: ["p3-raft"],
+      kind: .project, name: "Systems project", aliases: ["lab2-raft"],
       summary: "Course project: a replicated key-value store built on Raft.",
       firstSeen: now.addingTimeInterval(-6 * 86_400), lastSeen: now)
     let person = Entity(
