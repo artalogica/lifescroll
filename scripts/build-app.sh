@@ -53,7 +53,17 @@ PLIST
 IDENTITY="${LIFESCROLL_SIGN_IDENTITY:-Lifescroll Dev}"
 
 if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\""; then
-  codesign --force --sign "$IDENTITY" "$APP"
+  # Signing now and then fails with errSecInternalComponent when the keychain is briefly busy or
+  # is waiting on a prompt. A second try a moment later usually goes through.
+  if ! codesign --force --sign "$IDENTITY" "$APP"; then
+    echo "Signing failed; trying once more."
+    sleep 2
+    if ! codesign --force --sign "$IDENTITY" "$APP"; then
+      echo "Could not sign with \"$IDENTITY\". If macOS asked to let codesign use the key, choose Always Allow,"
+      echo "then run this script again. The app was built but is not signed, so it was not started."
+      exit 1
+    fi
+  fi
   echo "Signed with \"$IDENTITY\". Permissions carry over between builds."
 else
   codesign --force --sign - "$APP"

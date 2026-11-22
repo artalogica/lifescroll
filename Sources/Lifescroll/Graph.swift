@@ -550,7 +550,11 @@ final class GraphController: ObservableObject {
     case plus(from: String)
     /// A dot, and how far from its centre it was grabbed.
     case node(String, grab: CGSize)
+    /// One dot of a selected group: every dot in the group, and how far each is from the pointer.
+    case group(String, offsets: [String: CGSize])
     case empty(pan: CGSize)
+    /// Empty space with Shift held: a box is drawn, and what was selected before it.
+    case box(keeping: Set<String>)
     /// A click while a link is waiting for its other end.
     case linkEnd
   }
@@ -558,6 +562,8 @@ final class GraphController: ObservableObject {
   private struct Press: Equatable {
     let start: CGPoint
     let target: Target
+    /// Shift or Command was held: the click adds to the selection, or takes away from it.
+    var extending = false
     var moved = false
   }
 
@@ -571,8 +577,15 @@ final class GraphController: ObservableObject {
   private var byID: [String: Entity] = [:]
   private var labelSizes: [String: CGSize] = [:]
 
-  private(set) var selection: String?
-  private var onSelect: (String?) -> Void = { _ in }
+  /// Every selected dot. One is the usual case; more than one is a group.
+  private(set) var selected: Set<String> = []
+  /// The dot the plus sits beside. In a group it is the one most recently clicked.
+  private(set) var anchor: String?
+  /// The selected dot when exactly one is, for the panel beside the graph.
+  var selection: String? { selected.count == 1 ? selected.first : nil }
+  /// The box being drawn to select a group, while one is.
+  private(set) var selectionBox: CGRect?
+  private var onSelect: (Set<String>) -> Void = { _ in }
   private var onLink: (String, String) -> Void = { _, _ in }
 
   private(set) var size: CGSize = .zero
@@ -591,8 +604,8 @@ final class GraphController: ObservableObject {
   private(set) var linkTarget: String?
   /// True when the plus was clicked, not dragged: the next click on a dot completes the link.
   private(set) var linkArmed = false
-  /// The dot being dragged about, while one is.
-  private(set) var draggedNode: String?
+  /// The dots being dragged about, while any are.
+  private(set) var dragged: Set<String> = []
 
   /// False once nothing is moving, which stops the per-frame redraw.
   @Published private(set) var animating = true
@@ -601,20 +614,21 @@ final class GraphController: ObservableObject {
 
   /// Takes in the latest data. Called while the view is being rebuilt, so it must not publish.
   func update(
-    entities: [Entity], edges: [GraphEdge], selection: String?,
-    onSelect: @escaping (String?) -> Void, onLink: @escaping (String, String) -> Void
+    entities: [Entity], edges: [GraphEdge], selected: Set<String>,
+    onSelect: @escaping (Set<String>) -> Void, onLink: @escaping (String, String) -> Void
   ) {
     self.onSelect = onSelect
     self.onLink = onLink
-    let chosenElsewhere = self.selection != selection
+    let chosenElsewhere = self.selected != selected
     if chosenElsewhere {
-      self.selection = selection
-      if linkFrom != selection { endLink() }
+      self.selected = selected
+      if anchor.map({ !selected.contains($0) }) ?? true { anchor = selected.sorted().first }
+      if linkFrom != anchor { endLink() }
     }
     defer {
       // An entry picked somewhere other than the graph (just added, or opened from the panel) may
       // be out of sight. If it is, the view goes back to showing everything.
-      if chosenElsewhere, userMoved, size.width > 0, let selection, let spot = screenPosition(of: selection),
+      if chosenElsewhere, userMoved, size.width > 0, let anchor, let spot = screenPosition(of: anchor),
         !CGRect(origin: .zero, size: size).insetBy(dx: 24, dy: 24).contains(spot)
       {
         userMoved = false
@@ -728,11 +742,11 @@ final class GraphController: ObservableObject {
     return best?.id
   }
 
-  /// Where the plus handle sits: just up and to the right of the selected dot. There is none while
-  /// that dot is being dragged about.
+  /// Where the plus handle sits: just up and to the right of the selected dot, or in a group the
+  /// one most recently clicked. There is none while that dot is being dragged about.
   var plusCentre: CGPoint? {
-    guard let selection, draggedNode != selection, let entity = byID[selection],
-      let centre = screenPosition(of: selection)
+    guard let anchor, selected.contains(anchor), !dragged.contains(anchor), selectionBox == nil,
+      let entity = byID[anchor], let centre = screenPosition(of: anchor)
     else { return nil }
     let offset = (dotRadius(entity) + 17) * 0.7071
     return CGPoint(x: centre.x + offset, y: centre.y - offset)
@@ -756,9 +770,11 @@ final class GraphController: ObservableObject {
 
   /// A line to show while a link is being made, for the hint above the graph.
   var hint: String? {
-    guard let linkFrom, let name = byID[linkFrom]?.name else { return nil }
+    guard let linkFrom, let single = byID[linkFrom]?.name else { return nil }
+    let name = selected.count > 1 ? "these \(selected.count)" : single
     if let linkTarget, let other = byID[linkTarget]?.name {
-      return linkArmed ? "Click to link \(name) and \(other)" : "Let go to link \(name) and \(other)"
+      let pair = selected.count > 1 ? "\(name) to \(other)" : "\(name) and \(other)"
+      return linkArmed ? "Click to link \(pair)" : "Let go to link \(pair)"
     }
     return linkArmed ? "Click another dot to link it to \(name). Esc cancels." : "Drop on another dot to link it to \(name)"
   }
@@ -785,17 +801,43 @@ final class GraphController: ObservableObject {
     linkArmed = false
   }
 
-  private func select(_ id: String?) {
-    guard id != selection else { return }
-    selection = id
-    onSelect(id)
+  private func select(_ ids: Set<String>, anchor newAnchor: String? = nil) {
+    anchor = newAnchor.flatMap { ids.contains($0) ? $0 : nil }
+      ?? anchor.flatMap { ids.contains($0) ? $0 : nil } ?? ids.sorted().first
+    guard ids != selected else { return }
+    selected = ids
+    onSelect(ids)
+  }
+
+  /// Every dot not in the selection that a link from it could end on.
+  private func linkTarget(at point: CGPoint) -> String? {
+    var best: (id: String, distance: CGFloat)?
+    for entity in entities where !selected.contains(entity.id) {
+      guard let centre = screenPosition(of: entity.id) else { continue }
+      let distance = hypot(centre.x - point.x, centre.y - point.y)
+      if distance <= dotRadius(entity) + 16, distance < best?.distance ?? .infinity {
+        best = (entity.id, distance)
+      }
+    }
+    return best?.id
+  }
+
+  /// Links every selected dot to `target`.
+  private func linkSelection(to target: String) {
+    for id in selected.sorted() where id != target { onLink(id, target) }
+  }
+
+  /// Selects everything, as Command-A does.
+  func selectAll() {
+    select(Set(entities.map(\.id)))
+    changed()
   }
 
   func pointer(at point: CGPoint) -> Pointer {
     if let press, press.moved {
       switch press.target {
-      case .plus, .linkEnd: return .link
-      case .node, .empty: return .grabbing
+      case .plus, .linkEnd, .box: return .link
+      case .node, .group, .empty: return .grabbing
       }
     }
     if linkFrom != nil { return .link }
@@ -803,15 +845,30 @@ final class GraphController: ObservableObject {
     return node(at: point) == nil ? .arrow : .hand
   }
 
-  func pointerDown(at point: CGPoint) {
+  /// `extending` is Shift or Command: clicks then add to the selection or take away from it, and
+  /// a drag on empty space draws a box to select with.
+  func pointerDown(at point: CGPoint, extending: Bool = false) {
     if linkArmed, linkFrom != nil {
       press = Press(start: point, target: .linkEnd)
-    } else if let selection, isOnPlus(point) {
-      press = Press(start: point, target: .plus(from: selection))
+    } else if let anchor, isOnPlus(point) {
+      press = Press(start: point, target: .plus(from: anchor))
     } else if let id = node(at: point), let centre = simulation.position(of: id) {
       let grabbed = world(point)
-      press = Press(
-        start: point, target: .node(id, grab: CGSize(width: grabbed.x - centre.x, height: grabbed.y - centre.y)))
+      if selected.count > 1, selected.contains(id), !extending {
+        // Dragging one dot of a group moves the whole group.
+        var offsets: [String: CGSize] = [:]
+        for member in selected {
+          guard let place = simulation.position(of: member) else { continue }
+          offsets[member] = CGSize(width: grabbed.x - place.x, height: grabbed.y - place.y)
+        }
+        press = Press(start: point, target: .group(id, offsets: offsets))
+      } else {
+        press = Press(
+          start: point, target: .node(id, grab: CGSize(width: grabbed.x - centre.x, height: grabbed.y - centre.y)),
+          extending: extending)
+      }
+    } else if extending {
+      press = Press(start: point, target: .box(keeping: selected), extending: true)
     } else {
       press = Press(start: point, target: .empty(pan: pan))
     }
@@ -829,15 +886,29 @@ final class GraphController: ObservableObject {
       linkFrom = from
       linkArmed = false
       linkEnd = point
-      linkTarget = node(at: point, slack: 16, excluding: from)
+      linkTarget = linkTarget(at: point)
     case .linkEnd:
       linkEnd = point
-      linkTarget = node(at: point, slack: 16, excluding: linkFrom)
+      linkTarget = linkTarget(at: point)
     case .node(let id, let grab):
       let at = world(point)
-      draggedNode = id
+      dragged = [id]
       simulation.hold(id, at: CGPoint(x: at.x - grab.width, y: at.y - grab.height))
       wake()
+    case .group(_, let offsets):
+      let at = world(point)
+      dragged = Set(offsets.keys)
+      for (id, offset) in offsets {
+        simulation.hold(id, at: CGPoint(x: at.x - offset.width, y: at.y - offset.height))
+      }
+      wake()
+    case .box(let keeping):
+      let box = CGRect(
+        x: min(held.start.x, point.x), y: min(held.start.y, point.y),
+        width: abs(point.x - held.start.x), height: abs(point.y - held.start.y))
+      selectionBox = box
+      let inside = entities.filter { entity in screenPosition(of: entity.id).map(box.contains) ?? false }
+      select(keeping.union(inside.map(\.id)))
     case .empty(let start):
       userMoved = true
       pan = CGSize(
@@ -853,9 +924,9 @@ final class GraphController: ObservableObject {
     switch held.target {
     case .plus(let from):
       if held.moved {
-        let target = node(at: point, slack: 16, excluding: from)
+        let target = linkTarget(at: point)
         endLink()
-        if let target { onLink(from, target) }
+        if let target { linkSelection(to: target) }
       } else if linkFrom == from {
         // A second click on the plus puts it away again.
         endLink()
@@ -867,24 +938,37 @@ final class GraphController: ObservableObject {
         linkTarget = nil
       }
     case .linkEnd:
-      let from = linkFrom
-      let target = node(at: point, slack: 16, excluding: from)
+      let target = linkTarget(at: point)
       endLink()
-      if let from, let target { onLink(from, target) }
+      if let target { linkSelection(to: target) }
     case .node(let id, _):
       if held.moved {
-        draggedNode = nil
+        dragged = []
         simulation.release(id)
         wake()
+      } else if held.extending {
+        // Shift-click: in if it was out, out if it was in.
+        select(selected.symmetricDifference([id]), anchor: id)
       } else {
-        select(id)
+        select([id], anchor: id)
       }
+    case .group(let id, let offsets):
+      if held.moved {
+        dragged = []
+        for member in offsets.keys { simulation.release(member) }
+        wake()
+      } else {
+        // A plain click on one dot of a group picks just that dot.
+        select([id], anchor: id)
+      }
+    case .box:
+      selectionBox = nil
     case .empty:
       if !held.moved {
         if clicks >= 2 {
           fit()
         } else {
-          select(nil)
+          select([])
         }
       }
     }
@@ -896,9 +980,9 @@ final class GraphController: ObservableObject {
     let over = node(at: point)
     var dirty = over != hovered
     hovered = over
-    if linkArmed, let linkFrom {
+    if linkArmed, linkFrom != nil {
       linkEnd = point
-      linkTarget = node(at: point, slack: 16, excluding: linkFrom)
+      linkTarget = linkTarget(at: point)
       dirty = true
     }
     if dirty { changed() }
@@ -910,10 +994,15 @@ final class GraphController: ObservableObject {
     changed()
   }
 
-  /// Esc: gives up on a link that is being made.
+  /// Esc: gives up on a link that is being made, or failing that lets go of a group.
   @discardableResult
   func cancel() -> Bool {
-    guard linkFrom != nil else { return false }
+    guard linkFrom != nil else {
+      guard selected.count > 1, press == nil else { return false }
+      select([])
+      changed()
+      return true
+    }
     if case .plus = press?.target { press = nil }
     if case .linkEnd = press?.target { press = nil }
     endLink()
@@ -992,7 +1081,8 @@ struct GraphPointerSurface: NSViewRepresentable {
     override func mouseDown(with event: NSEvent) {
       // Taking the keyboard ends any typing in the field above, and lets Esc cancel a link.
       window?.makeFirstResponder(self)
-      controller?.pointerDown(at: point(event))
+      controller?.pointerDown(
+        at: point(event), extending: !event.modifierFlags.intersection([.shift, .command]).isEmpty)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1029,6 +1119,10 @@ struct GraphPointerSurface: NSViewRepresentable {
     override func keyDown(with event: NSEvent) {
       // 53 is Esc.
       if event.keyCode == 53, controller?.cancel() == true { return }
+      if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" {
+        controller?.selectAll()
+        return
+      }
       super.keyDown(with: event)
     }
   }
@@ -1047,7 +1141,8 @@ struct GraphPointerSurface: NSViewRepresentable {
 struct GraphCanvas: View {
   let entities: [Entity]
   let edges: [GraphEdge]
-  @Binding var selection: String?
+  /// Every selected entry: one as a rule, several when a group is picked.
+  @Binding var selected: Set<String>
   var onLink: (String, String) -> Void = { _, _ in }
   /// A controller set up by the caller, to draw one particular moment. The view keeps its own otherwise.
   var prepared: GraphController? = nil
@@ -1058,7 +1153,7 @@ struct GraphCanvas: View {
   var body: some View {
     let controller = prepared ?? own
     let _ = controller.update(
-      entities: entities, edges: edges, selection: selection, onSelect: { selection = $0 }, onLink: onLink)
+      entities: entities, edges: edges, selected: selected, onSelect: { selected = $0 }, onLink: onLink)
 
     TimelineView(.animation(paused: !controller.animating)) { timeline in
       Canvas { context, size in
@@ -1119,13 +1214,13 @@ struct GraphCanvas: View {
   }
 
   private func draw(_ context: inout GraphicsContext, _ graph: GraphController) {
-    let selection = graph.selection
+    let selected = graph.selected
     let hovered = graph.hovered
     let linking = graph.linkFrom != nil
-    // Selecting a dot dims everything it is not linked to. While a link is being made nothing is
-    // dimmed, because any dot may be where it ends.
-    let focus = linking ? nil : selection
-    let near = focus.map { (graph.neighbours[$0] ?? []).union([$0]) } ?? []
+    // Selecting dims everything the selection is not linked to. While a link is being made
+    // nothing is dimmed, because any dot may be where it ends.
+    let focus: Set<String> = linking ? [] : selected
+    let near = focus.reduce(into: focus) { $0.formUnion(graph.neighbours[$1] ?? []) }
     let warm = hovered.map { (graph.neighbours[$0] ?? []).union([$0]) } ?? []
     let zoom = graph.zoom
     let frame = CGRect(origin: .zero, size: graph.size).insetBy(dx: 4, dy: 4)
@@ -1143,23 +1238,26 @@ struct GraphCanvas: View {
     for edge in graph.edges {
       guard let a = graph.screenPosition(of: edge.a), let b = graph.screenPosition(of: edge.b) else { continue }
       let lit =
-        (focus != nil && (edge.a == focus || edge.b == focus))
+        focus.contains(edge.a) || focus.contains(edge.b)
         || (hovered != nil && (edge.a == hovered || edge.b == hovered))
       var path = Path()
       path.move(to: a)
       path.addLine(to: b)
       context.stroke(
-        path, with: .color(Color.white.opacity(lit ? 0.62 : (focus == nil ? 0.24 : 0.08))),
+        path, with: .color(Color.white.opacity(lit ? 0.62 : (focus.isEmpty ? 0.24 : 0.08))),
         lineWidth: lit ? 1.4 : 1)
     }
 
     // The link being made: a dashed line to the pointer, which turns solid and snaps to a dot
     // once it is close enough to join it.
     let target = graph.linkTarget.flatMap(graph.screenPosition)
-    if let from = graph.linkFrom, let start = graph.screenPosition(of: from), let end = target ?? graph.linkEnd {
+    if graph.linkFrom != nil, let end = target ?? graph.linkEnd {
+      // One line from every selected dot: a group is linked all at once.
       var path = Path()
-      path.move(to: start)
-      path.addLine(to: end)
+      for start in selected.sorted().compactMap(graph.screenPosition) {
+        path.move(to: start)
+        path.addLine(to: end)
+      }
       context.stroke(
         path, with: .color(target == nil ? Color.white.opacity(0.8) : Glass.mint),
         style: StrokeStyle(lineWidth: target == nil ? 1.4 : 2, lineCap: .round, dash: target == nil ? [5, 5] : []))
@@ -1176,7 +1274,7 @@ struct GraphCanvas: View {
     if let plus { taken.append(CGRect(x: plus.x - 12, y: plus.y - 12, width: 24, height: 24)) }
 
     func rank(_ entity: Entity) -> Int {
-      if entity.id == selection || entity.id == hovered || entity.id == graph.linkTarget { return 3 }
+      if selected.contains(entity.id) || entity.id == hovered || entity.id == graph.linkTarget { return 3 }
       if near.contains(entity.id) || warm.contains(entity.id) { return 2 }
       return graph.hubs.contains(entity.id) ? 1 : 0
     }
@@ -1189,13 +1287,13 @@ struct GraphCanvas: View {
     for entity in ordered {
       guard let centre = graph.screenPosition(of: entity.id) else { continue }
       let importance = rank(entity)
-      let dimmed = focus != nil && !near.contains(entity.id) && importance < 3
+      let dimmed = !focus.isEmpty && !near.contains(entity.id) && importance < 3
       let swell: CGFloat = entity.id == hovered || entity.id == graph.linkTarget ? 1.2 : 1
       let dot = graph.dotRadius(entity) * swell
       context.fill(
         Path(ellipseIn: CGRect(x: centre.x - dot, y: centre.y - dot, width: dot * 2, height: dot * 2)),
         with: .color(entity.kind.tone.opacity(dimmed ? 0.22 : 0.95)))
-      if entity.id == selection || entity.id == graph.linkTarget {
+      if selected.contains(entity.id) || entity.id == graph.linkTarget {
         let ring = dot + 4
         context.stroke(
           Path(ellipseIn: CGRect(x: centre.x - ring, y: centre.y - ring, width: ring * 2, height: ring * 2)),
@@ -1216,14 +1314,29 @@ struct GraphCanvas: View {
       func isClear(_ spot: CGRect) -> Bool { !taken.contains { $0.insetBy(dx: -4, dy: -2).intersects(spot) } }
       // A spot that keeps the whole name inside the graph is preferred to one that cuts it off.
       let free = spots.first { frame.contains($0) && isClear($0) } ?? spots.first(where: isClear)
-      // A name that matters is always shown; any other is dropped when nowhere is free.
-      guard let box = free ?? (importance >= 2 ? spots.first : nil) else { continue }
+      // A name that matters is always shown, in whichever spot covers least of what is already
+      // there; any other is dropped when nowhere is free.
+      func covered(_ spot: CGRect) -> CGFloat {
+        taken.reduce(0) { total, other in
+          let shared = other.intersection(spot)
+          return total + (shared.isNull ? 0 : shared.width * shared.height)
+        }
+      }
+      let forced = importance >= 2 ? spots.min { covered($0) < covered($1) } : nil
+      guard let box = free ?? forced else { continue }
       taken.append(box)
       context.draw(
         Text(name)
           .font(.system(size: 10.5, weight: importance >= 3 || importance == 1 ? .semibold : .regular))
           .foregroundColor(Color.white.opacity(dimmed ? 0.28 : (importance > 0 ? 0.96 : 0.72))),
         at: CGPoint(x: box.midX, y: box.midY))
+    }
+
+    // The box being dragged out to select a group.
+    if let box = graph.selectionBox {
+      let shape = Path(roundedRect: box, cornerRadius: 3)
+      context.fill(shape, with: .color(Color.white.opacity(0.07)))
+      context.stroke(shape, with: .color(Color.white.opacity(0.55)), lineWidth: 1)
     }
 
     // The plus handle on the selected dot: drag it onto another dot to link the two.

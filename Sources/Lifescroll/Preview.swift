@@ -299,6 +299,10 @@ enum UIPreview {
     shot("graph-selected-dark.png", light: false, size: graphStage, window: true) {
       GraphView(selection: project).frame(width: 1100, height: 700)
     }
+    let picked = Set(model.graph().entities.filter { ["Sam Ortiz", "Glass interfaces", "Design notes", "Priya Raman"].contains($0.name) }.map(\.id))
+    shot("graph-group-dark.png", light: false, size: graphStage, window: true) {
+      GraphView(group: picked).frame(width: 1100, height: 700)
+    }
     // A link caught halfway: drawn once so the graph knows its size, then the pointer presses the
     // plus and drags it to another dot, exactly as the mouse would, and it is drawn again.
     let linking = GraphController()

@@ -128,6 +128,10 @@ it. Drag a dot to move it, or drag empty space to move the whole picture. Scroll
 to pan; pinch, or hold Command and scroll, to zoom. Until you pan or zoom, the view keeps everything
 in frame by itself; the button in the corner, or a double-click on empty space, goes back to that.
 
+Shift-click dots, or hold Shift and drag a box around them, to select several at once (Command-A
+selects all). Dragging any one of a group moves them all, and dragging the group's plus onto another
+dot links every one of them to it. Esc, or a click on empty space, lets the group go.
+
 To link two entries, select one and drag the plus that appears beside it onto the other: the line
 snaps to a dot when it is close. Or click the plus and then click the other dot; Esc cancels. Each
 link in the panel has a button to remove it. Entries can be added by hand from the row above the

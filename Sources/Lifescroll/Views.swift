@@ -700,6 +700,8 @@ struct GraphView: View {
   @State private var kind: EntityKind = .project
   @State var selection: String?
   @State var showsGraph = true
+  /// Several entries picked together on the graph. Empty unless there are at least two.
+  @State var group: Set<String> = []
   /// A graph set up by the caller to show one particular moment, for previews.
   var preparedGraph: GraphController? = nil
   @State private var newName = ""
@@ -762,7 +764,14 @@ struct GraphView: View {
               }
             } else {
               GraphCanvas(
-                entities: graph.entities, edges: graph.edges, selection: $selection,
+                entities: graph.entities, edges: graph.edges,
+                // One selected entry shows its details; two or more are a group.
+                selected: Binding(
+                  get: { group.count > 1 ? group : Set([selection].compactMap { $0 }) },
+                  set: { chosen in
+                    group = chosen.count > 1 ? chosen : []
+                    selection = chosen.count == 1 ? chosen.first : nil
+                  }),
                 onLink: { model.link($0, $1) }, prepared: preparedGraph)
             }
           }
@@ -772,8 +781,20 @@ struct GraphView: View {
           // The panel is always there, so the graph never changes size, and so never shifts under
           // the pointer, when a dot is clicked.
           Group {
-            if let selection, let detail = model.detail(forEntity: selection) {
-              EntityDetailView(detail: detail, open: { self.selection = $0 }, stacked: true)
+            if group.count > 1 {
+              GraphGroupPanel(
+                entities: graph.entities.filter { group.contains($0.id) },
+                open: {
+                  group = []
+                  selection = $0
+                }, clear: { group = [] })
+            } else if let selection, let detail = model.detail(forEntity: selection) {
+              EntityDetailView(
+                detail: detail,
+                open: {
+                  group = []
+                  self.selection = $0
+                }, stacked: true)
             } else {
               GraphGuide()
             }
@@ -861,6 +882,7 @@ struct GraphGuide: View {
     ("Click a dot", "to see what it is linked to."),
     ("Drag the +", "that appears beside it onto another dot to link the two. Or click the +, then click the other dot."),
     ("Drag a dot", "to move it, or drag empty space to move the whole picture."),
+    ("Shift-click", "dots, or hold Shift and drag a box around them, to select a group. Drag any one of them to move them all, or drag the + to link them all to another dot."),
     ("Pinch", "or hold Command and scroll to zoom. Scroll with two fingers to pan."),
     ("Double-click", "empty space to bring everything back into view."),
   ]
@@ -883,6 +905,40 @@ struct GraphGuide: View {
         .foregroundStyle(Glass.faint)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 4)
+    }
+    .padding(18)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// What the panel beside the graph shows while several entries are selected together.
+struct GraphGroupPanel: View {
+  let entities: [Entity]
+  let open: (String) -> Void
+  let clear: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("\(entities.count) selected")
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(Glass.ink)
+        Spacer()
+        Button("Clear", action: clear)
+          .buttonStyle(GlassButtonStyle(kind: .secondary, compact: true))
+      }
+      Text("Drag any one of them to move them all. Drag the + onto another dot to link every one of them to it.")
+        .font(.system(size: 12.5))
+        .lineSpacing(2)
+        .foregroundStyle(Glass.soft)
+        .fixedSize(horizontal: false, vertical: true)
+      GlassScroll {
+        LazyVStack(spacing: 4) {
+          ForEach(entities.sorted { ($0.kind.rawValue, $0.name) < ($1.kind.rawValue, $1.name) }) { entity in
+            EntityListRow(entity: entity, selected: false) { open(entity.id) }
+          }
+        }
+      }
     }
     .padding(18)
     .frame(maxWidth: .infinity, alignment: .leading)

@@ -897,11 +897,11 @@ enum SelfTest {
     func ring(_ ids: [String]) -> [GraphEdge] { [GraphEdge(a: ids[0], b: ids[1], weight: 1, how: ""), GraphEdge(a: ids[1], b: ids[2], weight: 1, how: ""), GraphEdge(a: ids[0], b: ids[2], weight: 1, how: "")] }
     let edges = ring(["a1", "a2", "a3"]) + ring(["b1", "b2", "b3"])
     let graph = GraphController()
-    var selected: String?
-    var selections = 0
+    var chosen: Set<String> = []
+    var selected: String? { chosen.count == 1 ? chosen.first : nil }
     var linked: [(String, String)] = []
     func refresh() {
-      graph.update(entities: entities, edges: edges, selection: selected, onSelect: { selected = $0; selections += 1 }, onLink: { linked.append(($0, $1)) })
+      graph.update(entities: entities, edges: edges, selected: chosen, onSelect: { chosen = $0 }, onLink: { linked.append(($0, $1)) })
     }
     let size = CGSize(width: 900, height: 600)
     refresh()
@@ -916,8 +916,8 @@ enum SelfTest {
       graph.pointerUp(at: to)
       refresh()
     }
-    func click(_ point: CGPoint, clicks: Int = 1) {
-      graph.pointerDown(at: point)
+    func click(_ point: CGPoint, clicks: Int = 1, shift: Bool = false) {
+      graph.pointerDown(at: point, extending: shift)
       graph.pointerUp(at: point, clicks: clicks)
       refresh()
     }
@@ -991,6 +991,58 @@ enum SelfTest {
     check(!graph.userMoved && entities.allSatisfy { inView.contains(at($0.id)) }, "pointer: a double-click on empty space brings everything back into view")
     click(CGPoint(x: 5, y: 5))
     check(selected == nil && graph.plusCentre == nil, "pointer: a click on empty space clears the selection")
+
+    // Selecting several at once.
+    linked = []
+    click(at("a1"))
+    click(at("a2"), shift: true)
+    click(at("a3"), shift: true)
+    check(chosen == ["a1", "a2", "a3"] && graph.selection == nil && graph.anchor == "a3" && graph.plusCentre != nil, "group: Shift-click adds dots to the selection, and the plus moves to the latest")
+    click(at("a2"), shift: true)
+    check(chosen == ["a1", "a3"], "group: Shift-click on a selected dot takes it back out")
+    click(at("a2"), shift: true)
+
+    let spots = ["a1", "a2", "a3", "b1"].map(at)
+    let grab = CGPoint(x: spots[0].x + 2, y: spots[0].y + 1)
+    graph.pointerDown(at: grab)
+    graph.pointerDragged(to: CGPoint(x: grab.x + 40, y: grab.y - 25))
+    let moved = ["a1", "a2", "a3"].map(at)
+    let together = zip(spots, moved).allSatisfy { abs($1.x - $0.x - 40) < 0.5 && abs($1.y - $0.y + 25) < 0.5 }
+    graph.pointerUp(at: CGPoint(x: grab.x + 40, y: grab.y - 25))
+    refresh()
+    check(together && chosen == ["a1", "a2", "a3"], "group: dragging one dot of a group moves them all by the same amount, and keeps them selected")
+    check(abs(at("b1").x - spots[3].x) < 30 && abs(at("b1").y - spots[3].y) < 30, "group: dots outside the group are not dragged along")
+
+    for _ in 0..<600 { graph.frame(at: now, size: size) }
+    drag(from: graph.plusCentre!, to: at("loner"))
+    check(linked.map { "\($0.0)>\($0.1)" } == ["a1>loner", "a2>loner", "a3>loner"], "group: dragging the plus onto a dot links every selected dot to it")
+    linked = []
+    drag(from: graph.plusCentre!, to: at("a1"))
+    check(linked.isEmpty, "group: the plus cannot be dropped on a dot of the same group")
+
+    click(at("a2"))
+    check(chosen == ["a2"] && graph.selection == "a2", "group: a plain click on one dot of a group selects just that dot")
+    click(CGPoint(x: 5, y: 5))
+    for _ in 0..<600 { graph.frame(at: now, size: size) }
+    let corners = ["b1", "b2", "b3"].map(at)
+    let low = CGPoint(x: corners.map(\.x).min()! - 14, y: corners.map(\.y).min()! - 14)
+    let high = CGPoint(x: corners.map(\.x).max()! + 14, y: corners.map(\.y).max()! + 14)
+    graph.pointerDown(at: low, extending: true)
+    graph.pointerDragged(to: CGPoint(x: (low.x + high.x) / 2, y: (low.y + high.y) / 2))
+    graph.pointerDragged(to: high)
+    let boxShown = graph.selectionBox != nil && graph.plusCentre == nil
+    let panBefore = graph.pan
+    graph.pointerUp(at: high)
+    refresh()
+    check(boxShown && chosen.isSuperset(of: ["b1", "b2", "b3"]) && !chosen.contains("a1") && graph.selectionBox == nil && graph.pan == panBefore && !graph.userMoved, "group: holding Shift and dragging a box selects the dots inside it, without moving the view")
+    click(at("a1"), shift: true)
+    check(chosen.isSuperset(of: ["a1", "b1", "b2", "b3"]), "group: a boxed group can be added to with Shift-click")
+    check(graph.cancel() && chosen.isEmpty, "group: Esc lets go of a group")
+    graph.selectAll()
+    refresh()
+    check(chosen.count == entities.count, "group: Command-A selects everything")
+    click(CGPoint(x: 5, y: 5))
+    check(chosen.isEmpty, "group: a click on empty space lets go of the group")
   }
 
   /// Puts the graph in a real window, kept off screen, and gives mouse events to whichever view
@@ -1003,12 +1055,12 @@ enum SelfTest {
       let entities = ["a", "b", "c"].map { Entity(id: $0, kind: .project, name: $0, firstSeen: now, lastSeen: now, seenCount: 2) }
       let edges = [GraphEdge(a: "a", b: "b", weight: 1, how: "")]
       let graph = GraphController()
-      final class Seen { var selection: String?; var links: [(String, String)] = [] }
+      final class Seen { var selected: Set<String> = []; var links: [(String, String)] = [] }
       let seen = Seen()
       func content() -> some View {
         GraphCanvas(
           entities: entities, edges: edges,
-          selection: Binding(get: { seen.selection }, set: { seen.selection = $0 }),
+          selected: Binding(get: { seen.selected }, set: { seen.selected = $0 }),
           onLink: { seen.links.append(($0, $1)) }, prepared: graph
         )
         .frame(width: 700, height: 500)
@@ -1066,7 +1118,7 @@ enum SelfTest {
       send(.leftMouseDown, onDot)
       send(.leftMouseUp, onDot)
       settle()
-      check(seen.selection == "a" && graph.plusCentre != nil, "window: a mouse click on a dot selects it")
+      check(seen.selected == ["a"] && graph.plusCentre != nil, "window: a mouse click on a dot selects it")
 
       guard let plus = graph.plusCentre, let other = graph.screenPosition(of: "c") else { return }
       send(.leftMouseDown, plus)
