@@ -200,10 +200,3 @@ To time text recognition on your newest stored screenshots (it prints counts, ne
 ```bash
 .build/debug/Lifescroll --ocr-test 12
 ```
-
-## Not built yet
-
-- Tone matching for card text.
-- A learned ranker to replace the hand-written score.
-- Using the index for ranking (a task inheriting urgency from its project) and for reopening a whole project.
-- A local, zero-cost mode. Now that reading is text-first, a small local text model could replace Haiku.
