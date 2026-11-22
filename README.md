@@ -6,6 +6,26 @@ at you as a notification.
 
 Everything is stored on this Mac. Screenshots go to the Claude API to be read; nothing else leaves.
 
+## What it looks like
+
+These are drawn from invented sample data by `--render-ui`, described under "Check it". None of it is real.
+
+| A task card | A suggestion | Which matters more |
+|---|---|---|
+| ![A task card in the popover](docs/screenshots/popover-task-dark.png) | ![A suggestion card in the popover](docs/screenshots/popover-suggestion-dark.png) | ![A question asking which of two tasks matters more](docs/screenshots/popover-compare-dark.png) |
+
+All tasks, ranked:
+
+![The All tasks window](docs/screenshots/tasks-dark.png)
+
+Projects and people, with one entry selected:
+
+![The graph with a project selected](docs/screenshots/graph-selected-dark.png)
+
+A group of entries selected together:
+
+![The graph with four entries selected](docs/screenshots/graph-group-dark.png)
+
 ## Run it
 
 ```bash
