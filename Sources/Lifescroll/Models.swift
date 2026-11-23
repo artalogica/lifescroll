@@ -336,6 +336,15 @@ struct Recommendation: Identifiable, Equatable {
   var created: Date = Date()
   /// new, opened, dismissed or expired.
   var status: String = "new"
+  /// What it is about, in two or three plain words. Used to stop the feed filling with one subject.
+  var subject: String = ""
+  /// How far it is from what the user is already into: close, adjacent or far. Empty on older rows.
+  var distance: String = ""
+
+  /// The distance, worked out from the older marking where a row has none.
+  var reach: String { distance.isEmpty ? (bucket == "explore" ? "adjacent" : "close") : distance }
+  /// Something to take in within a few minutes: a clip, a short read.
+  var isShort: Bool { distance == "short" }
 
   /// Links come from the search services' own results and are still checked before opening.
   var webURL: URL? {
@@ -378,6 +387,8 @@ struct Candidate: Equatable {
   var published: Date? = nil
   var points: Int? = nil
   var bucket: String = "related"
+  /// How far it is from what the user is already into: close, adjacent or far.
+  var distance: String = "close"
 }
 
 /// What the user has been watching and reading, as recorded by the reading step.
@@ -401,6 +412,8 @@ struct PickResult: Codable, Equatable {
     var kind: String
     var bucket: String
     var estMinutes: Int
+    /// What it is about, in two or three plain words.
+    var subject: String? = nil
   }
 
   var picks: [Pick]

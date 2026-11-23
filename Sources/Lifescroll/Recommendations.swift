@@ -233,6 +233,8 @@ extension Schema {
         "kind": choice(["paper", "article", "video", "discussion"], "What it is."),
         "bucket": choice(["related", "explore"], "Close to their interests, or outside them."),
         "est_minutes": ["type": "integer", "description": "Honest guess at minutes to read or watch."],
+        "subject": string(
+          "What it is about, in two or three plain lowercase words, such as 'robot hands' or 'bread baking'. Copy an existing subject label exactly when it is the same subject."),
       ]))
   ])
 }
@@ -274,18 +276,99 @@ extension Prompts {
     When you have searched, reply with a short list of the best few things you found.
     """
 
+  /// Finds things one step away from the user's interests.
+  static let adjacentSearch = """
+    You find things for the suggestions in Lifescroll, a personal menu bar app. Alongside tasks, its \
+    feed shows the user things they would enjoy opening. You are given the subjects they have \
+    recently been watching and reading about.
+
+    Do not search for those subjects themselves: they already get plenty of that. Search one step \
+    away from them. For each search, start from one of their subjects and move sideways: the \
+    neighbouring field, the history behind it, the craft or the people behind it, the place it turns \
+    up unexpectedly, what else people who love it tend to fall for. Someone into robot hands might \
+    enjoy how prosthetic hands are made, how pianists train their fingers, or how octopus arms work.
+
+    Start each search from a different subject of theirs, so the results are spread out. Look for \
+    things with some life in them: a well-made video, a long-form essay, a striking project, a talk \
+    people recommend. Avoid news roundups and listicles.
+
+    Your searches go to a public search engine. Never search for the user's own name, or the name \
+    of a private project, course or company of theirs.
+
+    When you have searched, reply with a short list of the best few things you found.
+    """
+
+  /// Finds things with nothing to do with the user's interests.
+  static let farSearch = """
+    You find things for the suggestions in Lifescroll, a personal menu bar app. Alongside tasks, its \
+    feed shows the user things they would enjoy opening. This search is for surprise: things with \
+    nothing to do with what they usually read.
+
+    You are given a few fields chosen at random, and the subjects they already follow. Run one \
+    search for each field. In each, look for the single most remarkable thing a curious outsider \
+    could open and be glad they did: a classic essay, a beautiful explainer, an astonishing story, \
+    a documentary or talk people keep recommending years later. It should need no background, and \
+    it should be the kind of thing someone forwards to a friend.
+
+    Stay well away from the subjects they already follow, and avoid news, listicles, and anything \
+    that reads like homework.
+
+    Your searches go to a public search engine. Never search for the user's own name, or the name \
+    of a private project, course or company of theirs.
+
+    When you have searched, reply with a short list of the best few things you found.
+    """
+
+  /// Finds things that take a minute or two: the quick, scrollable part of the feed.
+  static let shortSearch = """
+    You find things for the suggestions in Lifescroll, a personal menu bar app. Alongside tasks, its \
+    feed shows the user things they would enjoy opening. This search is for the quick ones: things \
+    that take a minute or two and are satisfying straight away, the way a good short video is.
+
+    Look for short videos and clips (under about three minutes: YouTube Shorts, short explainers, \
+    a single striking demonstration), short visual pieces (one remarkable image, chart, map or \
+    animation with a paragraph), and very short reads (a single good anecdote, a one-screen post). \
+    Each should work with no background and pay off quickly.
+
+    You are given some of the subjects they follow and a few fields chosen at random. Run about \
+    half your searches on their subjects and half on the fields, so the quick ones are a mix of \
+    familiar and new. Adding words such as "short", "in 60 seconds" or "shorts" to a search helps.
+
+    Avoid compilations, reaction videos, clickbait, and anything that is mostly an advertisement.
+
+    Your searches go to a public search engine. Never search for the user's own name, or the name \
+    of a private project, course or company of theirs.
+
+    When you have searched, reply with a short list of the best few things you found.
+    """
+
   static let picks = """
     You choose the suggestions for Lifescroll's feed. This is the enjoyable half of the feed: things \
     the user would be glad they opened, not more homework. You are given what they have recently been \
-    watching and reading, how they responded to earlier suggestions, and candidates found by search.
+    watching and reading, how they responded to earlier suggestions, what is already waiting in \
+    their feed, and candidates from a bank of things found by search.
 
-    Choose up to eight candidates. Prefer things that are substantive and well regarded, that fit \
-    what they are into, and that differ from each other in topic and kind. If there are good \
-    candidates marked explore, include two or three, so the feed is not only more of the same.
+    Each candidate is marked with a distance. close is about what they are into now. adjacent is one \
+    step away from it. far has nothing to do with it and is there for surprise. short is something \
+    quick, a clip or a one-screen read, on any subject. A good feed has all four, and the user has \
+    said theirs was too much of the same thing and had too little that is quick to flick through.
+
+    Choose up to the number given as choose_up_to, best first, taking candidates from every distance: \
+    about a third short ones, and the rest spread evenly over the other three, when the candidates \
+    are good enough. Only choose a short candidate if it really is short: a few minutes at most. No two of your choices may be about \
+    the same subject, and none may share a subject with something in waiting_in_feed. Never choose \
+    anything about a subject in rested_subjects: those have been suggested enough for now, however \
+    much the user liked them. Spread your choices across different sites and different kinds.
+
+    For close candidates, prefer what is substantive and well regarded. For adjacent and far ones, \
+    prefer what is vivid, surprising and easy to start on over what is thorough: the point is that \
+    they open it and are glad, not that it is important.
 
     Leave out anything like what they said was not for them, anything thin or clickbait, job posts, \
-    and near-duplicates of each other. Choosing fewer than eight, or none, is fine when the candidates \
-    are weak.
+    and near-duplicates. Choosing fewer, or none, is fine when the candidates are weak.
+
+    subject is two or three plain words for what the piece is about. When it is the same subject as \
+    one in waiting_in_feed or rested_subjects, copy that label exactly.
 
     For each pick, why is the card's single line: address the user as "you", say concretely what is \
     in it or why it connects to what they have been doing, keep it under 90 characters, and avoid hype. \
@@ -306,9 +389,97 @@ struct SuggestionOutcome: Equatable {
 
 actor Recommender {
   /// How many unopened suggestions to keep on hand.
-  static let target = 8
-  /// The most web searches Claude may run in one round. Each search is billed on top of tokens.
-  static let maxWebSearches = 5
+  static let target = 12
+  /// The most web searches Claude may run for one distance in one round. Each search is billed on
+  /// top of tokens. A distance is only searched when the bank is running low on it.
+  static let maxWebSearches = 3
+  /// The three distances a suggestion can be from what the user is already into.
+  /// "short" is not a distance but a length: quick things on any subject. It is stocked and
+  /// shared out the same way, so it sits in the same list.
+  static let distances = ["close", "adjacent", "far", "short"]
+  /// Below this many waiting at a distance, the bank is topped up with a search.
+  static let bankLow = 12
+  /// How many from each distance are put in front of the chooser.
+  static let offeredPerDistance = 18
+  /// Suggested this many times within `restWindow`, a subject is rested.
+  static let wornOutAfter = 3
+  static let restWindow: TimeInterval = 10 * 86_400
+
+  /// Fields to go looking in for surprise. A few are drawn at random each time, in code, because
+  /// a model asked to "pick something different" tends to pick the same few things.
+  static let fields = [
+    "deep sea biology", "medieval history", "typography", "architecture", "jazz", "cartography",
+    "linguistics", "mountaineering", "food science", "astronomy", "animation", "textiles",
+    "urban planning", "chess", "mycology", "shipwrecks", "perfume", "bridges", "puppetry",
+    "volcanoes", "cryptic crosswords", "bird migration", "film editing", "clockmaking",
+    "ancient trade routes", "sign languages", "glassblowing", "polar exploration", "economics of everyday things",
+    "calligraphy", "insects", "sound design", "gardens", "maritime navigation", "paleontology",
+    "stage magic", "subway systems", "folk music", "optical illusions", "bookbinding", "weather",
+    "ceramics", "the history of numbers", "trees", "espionage history", "dance", "caves",
+    "photography", "board game design", "rivers", "the history of medicine", "comics", "tea",
+    "lighthouses", "memory and the mind", "deserts", "opera", "knots", "the Silk Road", "spiders",
+  ]
+
+  /// How many of each distance a full feed of `target` suggestions should hold.
+  nonisolated static func mix(of target: Int) -> [String: Int] {
+    // A third are quick ones; the rest are split between close, a step away and far afield.
+    let short = target / 3
+    let rest = target - short
+    let far = max(rest / 4, rest > 2 ? 1 : 0)
+    let close = (rest - far + 1) / 2
+    return ["close": close, "adjacent": rest - far - close, "far": far, "short": short]
+  }
+
+  /// Subjects suggested often enough lately that they get a rest, however well they were received.
+  nonisolated static func rested(_ counts: [String: Int]) -> Set<String> {
+    Set(counts.filter { $0.value >= wornOutAfter }.keys)
+  }
+
+  /// Turns the chooser's ordered picks into the ones that will be shown, keeping the feed varied.
+  /// At most two per subject and two per site among everything waiting, nothing on a rested
+  /// subject, and each distance held to its share. If that leaves room, the shares are relaxed,
+  /// never the other limits.
+  nonisolated static func varied(
+    _ picks: [PickResult.Pick], candidates: [Candidate], waiting: [Recommendation],
+    rested: Set<String>, room: Int, target: Int = Recommender.target
+  ) -> [(pick: PickResult.Pick, candidate: Candidate)] {
+    let byID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    var subjects: [String: Int] = [:]
+    var sites: [String: Int] = [:]
+    var reach: [String: Int] = [:]
+    for card in waiting {
+      let subject = EntityMatching.normalize(card.subject)
+      if !subject.isEmpty { subjects[subject, default: 0] += 1 }
+      sites[card.source.lowercased(), default: 0] += 1
+      reach[card.reach, default: 0] += 1
+    }
+    let share = mix(of: target)
+    var chosen: [(pick: PickResult.Pick, candidate: Candidate)] = []
+    var taken = Set<String>()
+
+    for strict in [true, false] {
+      for pick in picks where chosen.count < room && !taken.contains(pick.candidateId) {
+        guard let candidate = byID[pick.candidateId] else { continue }
+        let subject = EntityMatching.normalize(pick.subject ?? "")
+        let site = candidate.source.lowercased()
+        // Quick things mostly live on a few video sites, so those may appear more often.
+        guard !rested.contains(subject), subjects[subject, default: 0] < (subject.isEmpty ? .max : 2),
+          sites[site, default: 0] < (candidate.distance == "short" ? 4 : 2)
+        else { continue }
+        if strict, reach[candidate.distance, default: 0] >= share[candidate.distance, default: 0] { continue }
+        // One per subject within a round: two only ever build up across rounds.
+        if chosen.contains(where: { !subject.isEmpty && EntityMatching.normalize($0.pick.subject ?? "") == subject }) {
+          continue
+        }
+        taken.insert(pick.candidateId)
+        if !subject.isEmpty { subjects[subject, default: 0] += 1 }
+        sites[site, default: 0] += 1
+        reach[candidate.distance, default: 0] += 1
+        chosen.append((pick, candidate))
+      }
+    }
+    return chosen
+  }
   /// arXiv asks automated clients to leave about three seconds between requests.
   static let arxivPause: UInt64 = 3_000_000_000
 
@@ -366,8 +537,48 @@ actor Recommender {
       """
   }
 
-  nonisolated func picksInput(candidates: [Candidate], interests: String?) -> String {
+  /// The subjects the user follows, cleaned of anything private-looking. Safe to send to a search.
+  nonisolated func subjects(now: Date) -> [String] {
+    var seen = Set<String>()
+    return (store.interestSignals(since: now.addingTimeInterval(-14 * 86_400)).map(\.topic)
+      + store.entities(kind: .topic, limit: 20).map(\.name))
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty && !Self.looksLikeFile($0) && seen.insert($0.lowercased()).inserted }
+  }
+
+  /// What the far search is told: the fields to look in, and what to stay away from. It needs no
+  /// interests at all, so it works from the first day.
+  nonisolated func farPrompt(fields: [String], now: Date) -> String {
+    let known = subjects(now: now).prefix(20)
+    return """
+      Fields for this round, one search each:
+      \(fields.map { "- \($0)" }.joined(separator: "\n"))
+
+      Subjects they already follow, to stay away from:
+      \(known.isEmpty ? "(none recorded yet)" : known.map { "- \($0)" }.joined(separator: "\n"))
+      """
+  }
+
+  /// What the search for quick things is told: a few of their subjects and a couple of fields.
+  nonisolated func shortPrompt(fields: [String], now: Date) -> String {
+    let known = subjects(now: now).prefix(8)
+    return """
+      Some subjects they follow:
+      \(known.isEmpty ? "(none recorded yet)" : known.map { "- \($0)" }.joined(separator: "\n"))
+
+      Fields chosen at random for this round:
+      \(fields.map { "- \($0)" }.joined(separator: "\n"))
+      """
+  }
+
+  nonisolated func picksInput(
+    candidates: [Candidate], interests: String?, waiting: [Recommendation] = [],
+    rested: Set<String> = [], chooseUpTo: Int = Recommender.target
+  ) -> String {
     let payload: [String: Any] = [
+      "choose_up_to": chooseUpTo,
+      "waiting_in_feed": waiting.map { ["title": $0.title, "subject": $0.subject, "site": $0.source] },
+      "rested_subjects": rested.sorted(),
       "interests": interests ?? "Nothing recorded yet.",
       "earlier_suggestions": store.suggestionFeedback().map {
         ["title": $0.title, "response": $0.status == "opened" ? "opened it" : "said not for me"]
@@ -376,6 +587,7 @@ actor Recommender {
         var entry: [String: Any] = [
           "id": candidate.id, "title": candidate.title, "source": candidate.source,
           "link_host": URL(string: candidate.url)?.host ?? "", "marked": candidate.bucket,
+          "distance": candidate.distance,
         ]
         if !candidate.snippet.isEmpty { entry["summary"] = candidate.snippet }
         if let points = candidate.points { entry["points"] = points }
@@ -462,43 +674,83 @@ actor Recommender {
     return (found, problems)
   }
 
-  /// Tops the stock of suggestions back up. Two Sonnet calls at most: one to plan, one to choose.
+  /// One search by Claude at one distance. Returns what it found, already marked with the distance.
+  private func search(distance: String, system: String, prompt: String, now: Date) async throws -> [Candidate] {
+    // Every page a search returns is billed as input, around 25,000 tokens a search, and all that is
+    // kept is the links. The small model runs the searches; choosing among them stays with Sonnet.
+    var model = ClaudeClient.haiku
+    var found: ClaudeClient.WebSearchOutcome
+    do {
+      found = try await client.webSearch(model: model, system: system, prompt: prompt, maxUses: Self.maxWebSearches)
+    } catch ClaudeError.missingKey {
+      throw ClaudeError.missingKey
+    } catch {
+      model = ClaudeClient.sonnet
+      found = try await client.webSearch(model: model, system: system, prompt: prompt, maxUses: Self.maxWebSearches)
+    }
+    store.addUsage(model: model, input: found.inputTokens, output: found.outputTokens, now: now)
+    store.addWebSearches(found.searches, now: now)
+    return CandidateSources.candidates(fromWeb: found.results).map {
+      var candidate = $0
+      candidate.distance = distance
+      candidate.bucket = distance == "close" ? "related" : "explore"
+      return candidate
+    }
+  }
+
+  /// Tops the bank up wherever it is running low. Each distance is searched only when fewer than
+  /// `bankLow` are waiting at it, so most rounds search little or not at all.
+  func stock(now: Date, fields: [String]? = nil) async throws -> [String] {
+    var problems: [String] = []
+    let known = webSearchPrompt(now: now)
+    for distance in Self.distances where store.bankCount(distance: distance) < Self.bankLow {
+      let system: String
+      let prompt: String?
+      switch distance {
+      case "close": (system, prompt) = (Prompts.webSearch, known)
+      case "adjacent": (system, prompt) = (Prompts.adjacentSearch, known)
+      case "short":
+        system = Prompts.shortSearch
+        prompt = shortPrompt(fields: Array(Self.fields.shuffled().prefix(2)), now: now)
+      default:
+        system = Prompts.farSearch
+        prompt = farPrompt(fields: fields ?? Array(Self.fields.shuffled().prefix(Self.maxWebSearches)), now: now)
+      }
+      // Close and adjacent searches start from the user's interests; with none recorded they wait.
+      guard let prompt else { continue }
+      do {
+        let found = try await search(distance: distance, system: system, prompt: prompt, now: now)
+        if found.isEmpty { problems.append("the \(distance) search returned no pages") }
+        store.bank(found, now: now)
+      } catch ClaudeError.missingKey {
+        throw ClaudeError.missingKey
+      } catch {
+        problems.append(error.localizedDescription)
+      }
+    }
+    return problems
+  }
+
+  /// Tops the stock of suggestions back up: fills the bank where it is low, then has Sonnet choose
+  /// from the bank, and keeps only choices that leave the feed varied.
   func refresh(now: Date) async -> SuggestionOutcome {
     var outcome = SuggestionOutcome()
     store.expireRecommendations(before: now.addingTimeInterval(-7 * 86_400))
-    let room = Self.target - store.recommendations(status: "new").count
+    store.pruneBank(before: now.addingTimeInterval(-30 * 86_400))
+    let waiting = store.recommendations(status: "new")
+    let room = Self.target - waiting.count
     guard room > 0 else { return outcome }
 
     do {
       let interests = interestsJSON(now: now)
+      let webProblems = try await stock(now: now)
 
-      // First choice: Claude searches the web itself, steered by where the user already spends time.
-      var web: [Candidate] = []
-      var webProblem: String?
-      if let prompt = webSearchPrompt(now: now) {
-        do {
-          let found = try await client.webSearch(
-            model: ClaudeClient.sonnet, system: Prompts.webSearch, prompt: prompt,
-            maxUses: Self.maxWebSearches)
-          store.addUsage(
-            model: ClaudeClient.sonnet, input: found.inputTokens, output: found.outputTokens, now: now)
-          store.addWebSearches(found.searches, now: now)
-          web = CandidateSources.candidates(fromWeb: found.results)
-          if web.isEmpty {
-            webProblem = "the search ran \(found.searches) times but returned no pages"
-          }
-        } catch ClaudeError.missingKey {
-          throw ClaudeError.missingKey
-        } catch {
-          webProblem = error.localizedDescription
-        }
-      }
-
-      // Only if that found nothing: the older route of planned searches on arXiv and Hacker News.
+      // If Claude's own search brought nothing close, fall back to planned searches of arXiv and
+      // Hacker News. The Hacker News front page is fetched either way, as a free source of things
+      // a step away.
       var plan: SearchPlan?
       var planProblem: String?
-      if let interests, web.isEmpty {
-        // A failed plan only loses the targeted searches; the front page still needs no plan.
+      if let interests, store.bankCount(distance: "close") == 0 {
         do {
           let response = try await client.complete(
             model: ClaudeClient.sonnet, system: Prompts.searchPlan,
@@ -513,30 +765,64 @@ actor Recommender {
           planProblem = error.localizedDescription
         }
       }
+      var gatherProblems: [String] = []
+      if plan != nil || store.bankCount(distance: "adjacent") < Self.bankLow {
+        let gathered = await gather(plan: plan, now: now)
+        gatherProblems = gathered.problems
+        store.bank(
+          gathered.found.map {
+            var candidate = $0
+            candidate.distance = candidate.bucket == "explore" ? "adjacent" : "close"
+            return candidate
+          }, now: now)
+      }
 
+      // Offer the chooser an even spread from the bank, a few from each distance in turn.
       let seen = store.seenContent()
-      // With no plan this fetches only the Hacker News front page, for picks outside their interests.
-      let gathered = await gather(plan: plan, now: now)
+      let stocks = Self.distances.map { store.bankCandidates(distance: $0, limit: Self.offeredPerDistance) }
+      var offered: [Candidate] = []
+      for index in 0..<Self.offeredPerDistance {
+        for stock in stocks where index < stock.count { offered.append(stock[index]) }
+      }
       let candidates = CandidateSources.clean(
-        CandidateSources.reservingExplore(web + gathered.found), suggested: store.suggestedURLs(),
-        seenURLs: seen.urls, seenTitles: seen.titles)
+        offered, suggested: store.suggestedURLs(), seenURLs: seen.urls, seenTitles: seen.titles,
+        limit: Self.offeredPerDistance * Self.distances.count)
       outcome.candidates = candidates.count
       guard !candidates.isEmpty else {
-        // Nothing at all came back: say why, if planning or a search failed.
-        outcome.error = webProblem ?? planProblem ?? gathered.problems.first
+        outcome.error = webProblems.first ?? planProblem ?? gatherProblems.first
         return outcome
       }
 
+      let rested = Self.rested(store.subjectCounts(since: now.addingTimeInterval(-Self.restWindow)))
       let response = try await client.complete(
         model: ClaudeClient.sonnet, system: Prompts.picks,
-        content: [["type": "text", "text": picksInput(candidates: candidates, interests: interests)]],
+        content: [[
+          "type": "text",
+          "text": picksInput(
+            candidates: candidates, interests: interests, waiting: waiting, rested: rested,
+            // Asked for more than there is room for, so the variety limits have something to drop.
+            chooseUpTo: room * 2),
+        ]],
         schema: Schema.picks, effort: "medium")
       store.addUsage(
         model: ClaudeClient.sonnet, input: response.inputTokens, output: response.outputTokens, now: now)
       let result = try JSONCoding.decoder.decode(PickResult.self, from: Data(response.text.utf8))
-      outcome.added = Self.apply(result.picks, candidates: candidates, to: store, now: now, limit: room)
-      if let webProblem {
-        outcome.warning = "Web search did not work (\(webProblem)), so these came from arXiv and Hacker News."
+      let chosen = Self.varied(result.picks, candidates: candidates, waiting: waiting, rested: rested, room: room)
+      var used: [String] = []
+      for (pick, candidate) in chosen {
+        let suggestion = Recommendation(
+          title: candidate.title, url: candidate.url, source: candidate.source, kind: pick.kind,
+          why: pick.why, bucket: candidate.distance == "close" ? "related" : "explore",
+          estMinutes: max(pick.estMinutes, 0), created: now, subject: pick.subject ?? "",
+          distance: candidate.distance)
+        if store.add(suggestion) {
+          outcome.added += 1
+          used.append(candidate.url)
+        }
+      }
+      store.markBank(shown: candidates.map(\.url), used: used)
+      if let problem = webProblems.first {
+        outcome.warning = "One of the web searches did not work (\(problem))."
       }
     } catch {
       outcome.error = error.localizedDescription

@@ -179,9 +179,10 @@ enum Feed {
 
 enum SuggestionSchedule {
   /// Fewer than this many unopened suggestions means it is worth looking for more.
-  static let lowWater = 4
-  /// Shortest gap between two successful searches.
-  static let gap: TimeInterval = 2 * 3600
+  static let lowWater = 6
+  /// Shortest gap between two successful rounds. A round mostly draws on the bank, and only
+  /// searches when the bank is low, so rounds can come fairly often without costing much.
+  static let gap: TimeInterval = 45 * 60
   /// How long to wait after any attempt, including a failed one, before trying again.
   static let retryGap: TimeInterval = 20 * 60
 
@@ -367,6 +368,45 @@ enum EntityMatching {
       entity.kind == kind
         && (normalize(entity.name) == key || entity.aliases.contains { normalize($0) == key })
     }
+  }
+
+  /// Words too common to suggest that two names are the same thing.
+  static let fillerWords: Set<String> = [
+    "the", "a", "an", "of", "and", "for", "to", "in", "on", "with", "my", "new", "notes", "doc", "page",
+  ]
+
+  static func words(_ name: String) -> Set<String> {
+    Set(normalize(name).split(separator: " ").map(String.init).filter { !fillerWords.contains($0) })
+  }
+
+  /// The existing entries worth showing the model when it decides what new names are: those of the
+  /// same kind sharing a word or an initialism with a new name, then the most recently seen. Sending
+  /// the whole index with every call was most of the day's Sonnet bill.
+  static func shortlist(
+    for names: [(kind: EntityKind, name: String)], in entities: [Entity], recent: Int = 12, limit: Int = 40
+  ) -> [Entity] {
+    let asked = names.map { (kind: $0.kind, words: words($0.name), key: normalize($0.name).replacingOccurrences(of: " ", with: "")) }
+    func initials(_ name: String) -> String {
+      String(normalize(name).split(separator: " ").compactMap(\.first))
+    }
+    func related(_ entity: Entity) -> Bool {
+      let labels = [entity.name] + entity.aliases
+      return asked.contains { item in
+        guard item.kind == entity.kind else { return false }
+        return labels.contains { label in
+          let squashed = normalize(label).replacingOccurrences(of: " ", with: "")
+          if !words(label).isDisjoint(with: item.words) { return true }
+          if item.key.count >= 4, squashed.count >= 4, squashed.contains(item.key) || item.key.contains(squashed) { return true }
+          let short = initials(label)
+          return short.count >= 2 && (short == item.key || item.words.contains(short))
+        }
+      }
+    }
+    var chosen = entities.filter(related)
+    if chosen.count > limit { chosen = Array(chosen.prefix(limit)) }
+    let have = Set(chosen.map(\.id))
+    chosen += entities.filter { !have.contains($0.id) }.prefix(recent)
+    return chosen
   }
 
   /// Mentions with a usable name and kind, one per distinct name.

@@ -161,7 +161,9 @@ enum Prompts {
     that watches one person's Mac to keep track of their work. A smaller model named things it saw on \
     their screen. Some of those names are not in the index yet. Decide what each new name is.
 
-    You receive the existing entries and the new names, each with its kind and a sentence of context.
+    You receive the new names, each with its kind and a sentence of context, and the existing entries \
+    most likely to be the same things: those with similar names, and the ones seen most recently. \
+    The index holds more entries than you are shown.
 
     For each new name choose one decision:
     - same_as: it is another name for an existing entry of the same kind. Typical cases are a course \
@@ -404,7 +406,10 @@ actor Analyzer {
   nonisolated func entityInput(unknown: [Extraction.Mention]) -> String? {
     guard !unknown.isEmpty else { return nil }
     let payload: [String: Any] = [
-      "existing_entries": store.entities(limit: 200).map { entity -> [String: Any] in
+      "existing_entries": EntityMatching.shortlist(
+        for: unknown.compactMap { mention in EntityKind(rawValue: mention.kind).map { (kind: $0, name: mention.name) } },
+        in: store.entities(limit: 500)
+      ).map { entity -> [String: Any] in
         [
           "id": entity.id, "kind": entity.kind.rawValue, "name": entity.name,
           "other_names": entity.aliases, "summary": entity.summary,

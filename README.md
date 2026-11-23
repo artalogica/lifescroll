@@ -51,8 +51,9 @@ one card that matters most.
   and one main button: **Start**.
 - **Ranked for you, corrected by you.** Importance, deadlines and who is waiting set the order.
   Now and then it asks "which matters more?", and your answer outweighs its guess.
-- **A feed for life, not just work.** Suggestions (a paper, an essay, a talk) are found by Claude
-  searching the web for things like what you already read and watch.
+- **A feed for life, not just work.** A third of the suggestions are quick ones, a clip or a
+  one-screen read. The rest come at three distances: close to what you already read and watch, one
+  step away from it, and far afield for the surprise. No subject or site is allowed to take over.
 - **Nudges when you drift.** Scroll too long and the top card arrives as a notification.
 - **Three modes.** Pure dopamine, Balanced, or Lock in, depending on the day you are having.
 - **It learns what is not a task.** Mark a card **Not a task** and things like it stop appearing.
@@ -206,7 +207,7 @@ flowchart LR
 | **Read** | every 10 min | Claude Haiku 5.5 is sent the text of up to 12 key screens, cut down to lines not already sent, and reports commitments, completions and what you were looking at. |
 | **Index** | after each read | The projects, people, documents and topics Haiku named are matched against the graph by name. Claude Sonnet 5.5 is called only for names not seen before. |
 | **Merge** | after each read | Claude Sonnet 5.5 merges commitments into the task list, sets importance, links each task to its project and writes each card's "why now" line. |
-| **Suggest** | when fewer than 4 are on hand, at most every 2 h | Claude Sonnet 5.5 searches the web (up to 5 searches) for things like what you have been reading, and chooses up to 8 worth a card. If the search finds nothing, it falls back to arXiv and Hacker News. |
+| **Suggest** | when fewer than 6 are on hand, at most every 45 min | Claude Sonnet 5.5 searches the web four ways (close to your interests, a step away, in a few fields drawn at random, and for quick things of a minute or two) and everything found goes into a bank. Each kind is searched only when the bank is low on it. Sonnet then chooses from the bank to keep 12 on hand, and code keeps the feed varied: a share for each kind, at most two per subject and per site, and a rest for any subject suggested three times in ten days. |
 
 **Text first.** Text recognition runs on-device with Apple's Vision framework, so Claude is sent
 words, not pictures, for most screens. Only the screens with almost no text also send their

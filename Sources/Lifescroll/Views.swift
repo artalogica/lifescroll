@@ -387,7 +387,10 @@ struct SuggestionCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       CardHeader(
-        label: suggestion.bucket == "explore" ? "Something different" : "You might like",
+        label: suggestion.isShort
+          ? "Quick one"
+          : (suggestion.reach == "far"
+            ? "Something different" : (suggestion.reach == "adjacent" ? "A step away" : "You might like")),
         color: Glass.blushRose)
       CardText(title: suggestion.title, why: suggestion.why)
 

@@ -43,6 +43,9 @@ final class Store: @unchecked Sendable {
     CREATE TABLE IF NOT EXISTS recommendations (
       id TEXT PRIMARY KEY, title TEXT, url TEXT UNIQUE, source TEXT, kind TEXT, why TEXT,
       bucket TEXT, est_minutes INTEGER, created REAL, status TEXT);
+    CREATE TABLE IF NOT EXISTS content_bank (
+      url_key TEXT PRIMARY KEY, title TEXT, url TEXT, source TEXT, snippet TEXT, published REAL,
+      points INTEGER, distance TEXT, found REAL, shown INTEGER DEFAULT 0, used INTEGER DEFAULT 0);
     """
 
   init(path: String, framesDirectory: URL) throws {
@@ -59,6 +62,8 @@ final class Store: @unchecked Sendable {
     try addColumnIfMissing("frames", "text", "TEXT")
     try addColumnIfMissing("tasks", "started_at", "REAL")
     try addColumnIfMissing("tasks", "not_task", "INTEGER DEFAULT 0")
+    try addColumnIfMissing("recommendations", "subject", "TEXT DEFAULT ''")
+    try addColumnIfMissing("recommendations", "distance", "TEXT DEFAULT ''")
     try addColumnIfMissing("entity_links", "how", "TEXT DEFAULT ''")
     try addColumnIfMissing("entity_links", "evidence", "TEXT DEFAULT ''")
     try addColumnIfMissing("entity_links", "last_observation", "INTEGER DEFAULT 0")
@@ -532,7 +537,8 @@ final class Store: @unchecked Sendable {
       id: row.string("id"), title: row.string("title"), url: row.string("url"),
       source: row.string("source"), kind: row.string("kind"), why: row.string("why"),
       bucket: row.string("bucket"), estMinutes: row.int("est_minutes"),
-      created: row.date("created") ?? Date(), status: row.string("status"))
+      created: row.date("created") ?? Date(), status: row.string("status"),
+      subject: row.string("subject"), distance: row.string("distance"))
   }
 
   /// Adds a suggestion unless one with the same link was ever stored. Returns whether it was added.
@@ -542,15 +548,93 @@ final class Store: @unchecked Sendable {
     _ = try? db.execute(
       """
       INSERT OR IGNORE INTO recommendations (id, title, url, source, kind, why, bucket,
-        est_minutes, created, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        est_minutes, created, status, subject, distance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
         .text(suggestion.id), .text(suggestion.title), .text(suggestion.url),
         .text(suggestion.source), .text(suggestion.kind), .text(suggestion.why),
         .text(suggestion.bucket), .int(Int64(suggestion.estMinutes)), .date(suggestion.created),
-        .text(suggestion.status),
+        .text(suggestion.status), .text(suggestion.subject), .text(suggestion.distance),
       ])
     return recommendationCount() > before
+  }
+
+  // MARK: - The content bank
+
+  // Everything the searches turn up is kept here, not only the few that become cards. Later rounds
+  // choose from the whole stock, so there is far more to choose between than one search returns.
+
+  /// Adds what a search found. Something already in the bank is left as it is.
+  @discardableResult
+  func bank(_ candidates: [Candidate], now: Date) -> Int {
+    let before = bankCount()
+    for candidate in candidates {
+      _ = try? db.execute(
+        """
+        INSERT OR IGNORE INTO content_bank (url_key, title, url, source, snippet, published, points,
+          distance, found) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          .text(CandidateSources.key(forURL: candidate.url)), .text(candidate.title), .text(candidate.url),
+          .text(candidate.source), .text(candidate.snippet), .date(candidate.published),
+          candidate.points.map { .int(Int64($0)) } ?? .null, .text(candidate.distance), .date(now),
+        ])
+    }
+    return bankCount() - before
+  }
+
+  /// How many things are waiting in the bank, in all or at one distance.
+  func bankCount(distance: String? = nil) -> Int {
+    let rows =
+      distance.map {
+        try? db.query("SELECT COUNT(*) AS n FROM content_bank WHERE used = 0 AND distance = ?", [.text($0)])
+      } ?? (try? db.query("SELECT COUNT(*) AS n FROM content_bank WHERE used = 0"))
+    return rows?.first?.int("n") ?? 0
+  }
+
+  /// What is waiting at one distance. The least often offered come first, so the same few are not
+  /// put forward round after round.
+  func bankCandidates(distance: String, limit: Int) -> [Candidate] {
+    let rows = try? db.query(
+      """
+      SELECT * FROM content_bank WHERE used = 0 AND distance = ?
+      ORDER BY shown ASC, found DESC, rowid ASC LIMIT ?
+      """, [.text(distance), .int(Int64(limit))])
+    return (rows ?? []).map { row in
+      Candidate(
+        title: row.string("title"), url: row.string("url"), source: row.string("source"),
+        snippet: row.string("snippet"), published: row.date("published"),
+        points: row.int("points") > 0 ? row.int("points") : nil,
+        bucket: distance == "close" ? "related" : "explore", distance: distance)
+    }
+  }
+
+  /// Records that these were put in front of the chooser, and which of them became cards.
+  func markBank(shown: [String], used: [String]) {
+    for url in shown {
+      _ = try? db.execute(
+        "UPDATE content_bank SET shown = shown + 1 WHERE url_key = ?", [.text(CandidateSources.key(forURL: url))])
+    }
+    for url in used {
+      _ = try? db.execute(
+        "UPDATE content_bank SET used = 1 WHERE url_key = ?", [.text(CandidateSources.key(forURL: url))])
+    }
+  }
+
+  /// Clears out what is old, and what has been offered several times and never chosen.
+  func pruneBank(before cutoff: Date, passedOver: Int = 4) {
+    _ = try? db.execute(
+      "DELETE FROM content_bank WHERE found < ? OR (used = 0 AND shown >= ?)",
+      [.date(cutoff), .int(Int64(passedOver))])
+  }
+
+  /// How many times each subject has been suggested since a date, whatever became of the card.
+  func subjectCounts(since: Date) -> [String: Int] {
+    let rows = try? db.query(
+      "SELECT subject FROM recommendations WHERE created >= ? AND subject != ''", [.date(since)])
+    var counts: [String: Int] = [:]
+    for row in rows ?? [] { counts[EntityMatching.normalize(row.string("subject")), default: 0] += 1 }
+    return counts
   }
 
   private func recommendationCount() -> Int {

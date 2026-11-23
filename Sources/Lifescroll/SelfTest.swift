@@ -41,6 +41,7 @@ enum SelfTest {
     livingGraph()
     graphPointer()
     graphWindow()
+    variety()
     addingByHand()
     notATask()
     print(failures == 0 ? "PASS  \(passes) checks" : "FAILED  \(failures) of \(passes + failures) checks")
@@ -475,7 +476,7 @@ enum SelfTest {
     let recent = now.addingTimeInterval(-600)
     check(SuggestionSchedule.shouldFind(mode: .balanced, onHand: 0, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: fetched when the feed has none")
     check(!SuggestionSchedule.shouldFind(mode: .lockIn, onHand: 0, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: never fetched in Lock in")
-    check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 4, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: not fetched while enough are on hand")
+    check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: SuggestionSchedule.lowWater, lastSuccess: nil, lastAttempt: nil, now: now), "suggestions: not fetched while enough are on hand")
     check(!SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: recent, lastAttempt: nil, now: now) && !SuggestionSchedule.shouldFind(mode: .dopamine, onHand: 0, lastSuccess: nil, lastAttempt: recent, now: now), "suggestions: at most one fetch every two hours, and failures wait twenty minutes")
 
     // Found in review: related results alone can fill the 50-candidate cap and squeeze out the front page.
@@ -1207,6 +1208,91 @@ enum SelfTest {
     }
   }
 
+  /// The complaint these answer: suggestions were all alike, and none of them a surprise.
+  private static func variety() {
+    let now = Date()
+    check(Recommender.mix(of: 12) == ["close": 3, "adjacent": 3, "far": 2, "short": 4], "variety: a full feed is a third quick ones, the rest split between close, a step away and far afield")
+    check(Recommender.mix(of: Recommender.target).values.reduce(0, +) == Recommender.target && Recommender.mix(of: 4)["far"] == 1 && Recommender.mix(of: 4)["short"] == 1, "variety: even a small feed keeps a place for surprise and for something quick")
+    let clips = (1...6).map { Candidate(id: "s\($0)", title: "Clip \($0)", url: "https://youtube.com/shorts/\($0)", source: "youtube.com", distance: "short") }
+    let clipPicks = (1...6).map { PickResult.Pick(candidateId: "s\($0)", why: "w", kind: "video", bucket: "explore", estMinutes: 1, subject: "subject \($0)") }
+    check(Recommender.varied(clipPicks, candidates: clips, waiting: [], rested: [], room: 12).count == 4, "short: quick things may come from the same video site more often, up to four")
+    check(Recommendation(title: "", url: "", source: "", kind: "", why: "", bucket: "explore", distance: "short").isShort && Prompts.shortSearch.contains("Never search for the user's own name") && Prompts.picks.contains("short"), "short: quick things are their own kind, searched for and chosen as such")
+    if let empty = try? Store.inMemory() {
+      let prompt = Recommender(store: empty).shortPrompt(fields: ["jazz", "caves"], now: now)
+      check(prompt.contains("- jazz") && prompt.contains("- caves") && prompt.contains("none recorded yet"), "short: the search for quick things works before any interests are recorded")
+    }
+    check(Recommender.rested(["robot hands": 3, "bread": 2]) == ["robot hands"], "variety: a subject suggested three times lately is rested")
+    check(Set(Recommender.fields).count == Recommender.fields.count && Recommender.fields.count >= 50, "variety: there are plenty of fields to draw surprises from, with no repeats")
+
+    func candidate(_ id: String, _ site: String, _ distance: String) -> Candidate {
+      Candidate(id: id, title: "Title \(id)", url: "https://\(site)/\(id)", source: site, distance: distance)
+    }
+    func pick(_ id: String, _ subject: String) -> PickResult.Pick {
+      PickResult.Pick(candidateId: id, why: "w", kind: "article", bucket: "related", estMinutes: 5, subject: subject)
+    }
+    let candidates = [
+      candidate("c1", "a.com", "close"), candidate("c2", "b.com", "close"), candidate("c3", "c.com", "close"),
+      candidate("c4", "d.com", "close"), candidate("c5", "e.com", "adjacent"), candidate("c6", "f.com", "far"),
+      candidate("c7", "a.com", "far"), candidate("c8", "a.com", "adjacent"), candidate("c9", "g.com", "adjacent"),
+    ]
+    let ordered = [
+      pick("c1", "Robot hands"), pick("c2", "robot hands"), pick("c3", "tactile sensing"), pick("c4", "diffusion models"),
+      pick("c5", "prosthetics"), pick("c6", "lighthouses"), pick("c7", "volcanoes"), pick("c8", "pianists"), pick("c9", "octopus arms"),
+    ]
+    let chosen = Recommender.varied(ordered, candidates: candidates, waiting: [], rested: [], room: 8)
+    let ids = chosen.map(\.candidate.id)
+    check(!ids.contains("c2"), "variety: two picks on the same subject are never added together")
+    check(ids.filter { ["c1", "c3", "c4"].contains($0) }.count == 3 && ids.contains("c6") && ids.contains("c7"), "variety: close picks are held to their share, leaving room for the far ones")
+    check(!ids.contains("c8"), "variety: no more than two from one site")
+    check(Recommender.varied(ordered, candidates: candidates, waiting: [], rested: ["robot hands", "lighthouses"], room: 8).allSatisfy { !["c1", "c2", "c6"].contains($0.candidate.id) }, "variety: nothing on a rested subject gets through, however it was ranked")
+
+    let waiting = [
+      Recommendation(title: "A", url: "https://x.com/1", source: "a.com", kind: "paper", why: "", bucket: "related", subject: "tactile sensing", distance: "close"),
+      Recommendation(title: "B", url: "https://x.com/2", source: "a.com", kind: "paper", why: "", bucket: "related", subject: "Tactile Sensing", distance: "close"),
+      Recommendation(title: "C", url: "https://x.com/3", source: "z.com", kind: "paper", why: "", bucket: "related", distance: "close"),
+    ]
+    let topUp = Recommender.varied(ordered, candidates: candidates, waiting: waiting, rested: [], room: 5).map(\.candidate.id)
+    check(!topUp.contains("c3") && !topUp.contains("c1") && !topUp.contains("c7"), "variety: what is already waiting counts toward the limits on subject and site")
+    check(topUp.first == "c5" && topUp.count == 5, "variety: with close already full, a top-up starts with something further out and still fills the room")
+    check(Recommender.varied(ordered, candidates: candidates, waiting: [], rested: [], room: 2).count == 2, "variety: never more than there is room for")
+    let onlyClose = Recommender.varied([pick("c1", "a"), pick("c2", "b"), pick("c3", "c"), pick("c4", "d")], candidates: candidates, waiting: [], rested: [], room: 4)
+    check(onlyClose.count == 4, "variety: if only close things were found, the room is still filled")
+    check(Recommendation(title: "", url: "", source: "", kind: "", why: "", bucket: "explore").reach == "adjacent" && Recommendation(title: "", url: "", source: "", kind: "", why: "", bucket: "related").reach == "close", "variety: older suggestions are given a distance from how they were marked")
+
+    guard let store = try? Store.inMemory() else { return }
+    let banked = store.bank(candidates + [candidate("c1", "a.com", "far")], now: now)
+    check(banked == 9 && store.bankCount() == 9 && store.bankCount(distance: "far") == 2 && store.bankCount(distance: "close") == 4, "bank: everything found is kept, once, under its distance")
+    let far = store.bankCandidates(distance: "far", limit: 10)
+    check(far.count == 2 && far.allSatisfy { $0.distance == "far" && $0.bucket == "explore" }, "bank: what is waiting comes back by distance")
+    store.markBank(shown: ["https://f.com/c6", "https://a.com/c7"], used: ["https://a.com/c7"])
+    check(store.bankCount(distance: "far") == 1 && store.bankCandidates(distance: "far", limit: 10).map(\.url) == ["https://f.com/c6"], "bank: something that became a card is not offered again")
+    store.markBank(shown: ["https://a.com/c1"], used: [])
+    check(store.bankCandidates(distance: "close", limit: 10).last?.url == "https://a.com/c1", "bank: what has been offered before goes to the back of the queue")
+    for _ in 0..<3 { store.markBank(shown: ["https://a.com/c1"], used: []) }
+    store.pruneBank(before: now.addingTimeInterval(-30 * 86_400))
+    check(store.bankCount(distance: "close") == 3, "bank: something offered four times and never chosen is dropped")
+    store.pruneBank(before: now.addingTimeInterval(60))
+    check(store.bankCount() == 0, "bank: old stock is cleared out")
+
+    for index in 0..<3 {
+      _ = store.add(Recommendation(title: "T\(index)", url: "https://s.com/\(index)", source: "s.com", kind: "paper", why: "", bucket: "related", created: now, subject: index == 0 ? "Robot Hands" : "robot hands", distance: "close"))
+    }
+    _ = store.add(Recommendation(title: "Old", url: "https://s.com/old", source: "s.com", kind: "paper", why: "", bucket: "related", created: now.addingTimeInterval(-20 * 86_400), subject: "bread", distance: "close"))
+    let counts = store.subjectCounts(since: now.addingTimeInterval(-Recommender.restWindow))
+    check(counts == ["robot hands": 3] && Recommender.rested(counts) == ["robot hands"], "variety: subjects are counted over the last ten days, whatever their capitals")
+    check(store.recommendations(status: "new").first { $0.title == "T0" }?.distance == "close", "variety: a suggestion remembers its subject and distance")
+
+    let recommender = Recommender(store: store)
+    let input = recommender.picksInput(candidates: candidates, interests: nil, waiting: waiting, rested: ["robot hands"], chooseUpTo: 10)
+    check(input.contains("\"choose_up_to\" : 10") && input.contains("\"rested_subjects\"") && input.contains("robot hands") && input.contains("\"waiting_in_feed\"") && input.contains("\"distance\" : \"far\""), "variety: the chooser is told what is waiting, what is rested, and how far each candidate is")
+    let farPrompt = recommender.farPrompt(fields: ["lighthouses", "jazz"], now: now)
+    check(farPrompt.contains("- lighthouses") && farPrompt.contains("- jazz") && farPrompt.contains("none recorded yet"), "variety: the far search works with no interests recorded at all")
+    for prompt in [Prompts.adjacentSearch, Prompts.farSearch] {
+      check(prompt.contains("Never search for the user's own name"), "variety: every search prompt forbids searching for the user or their private projects")
+    }
+    check(Prompts.picks.contains("rested_subjects") && Prompts.picks.contains("waiting_in_feed") && Prompts.picks.contains("far"), "variety: the chooser is told what the limits mean")
+  }
+
   private final class Counter: @unchecked Sendable {
     var arxiv = 0
     var other = 0
@@ -1314,6 +1400,11 @@ enum SelfTest {
     check(input.contains("Raft paper") && input.contains("CS-101 Lab 2") && input.contains(project.id), "graph: Sonnet sees the new name and the existing entries")
     check(!input.contains("YouTube"), "graph: ignored names are not offered as merge targets")
     check(analyzer.entityInput(unknown: []) == nil, "graph: no Sonnet call when every name is known")
+    let crowd = (0..<120).map { Entity(kind: .topic, name: "Subject \($0)zz", summary: String(repeating: "x", count: 80)) }
+      + [Entity(kind: .project, name: "Operating Systems", aliases: ["15-000"]), Entity(kind: .document, name: "Distributed consensus survey")]
+    let few = EntityMatching.shortlist(for: [(kind: .project, name: "OS"), (kind: .document, name: "consensus-survey.pdf")], in: crowd)
+    check(few.count == 14 && few.prefix(2).map(\.name) == ["Operating Systems", "Distributed consensus survey"], "cost: only likely matches and a few recent entries go to Sonnet, by initials or a shared word")
+    check(!EntityMatching.shortlist(for: [(kind: .topic, name: "Operating Systems")], in: crowd, recent: 0).contains { $0.kind == .project }, "cost: an entry of another kind is not offered as a match")
     check((analyzer.mergeInput(extraction, now: now) ?? "").contains("\"project\" : \"101 Lab\""), "graph: the task merge is told which project a commitment belongs to")
 
     let decisions = #"{"decisions":[{"mention":"Raft paper","kind":"document","decision":"new","entity_id":"","name":"In Search of an Understandable Consensus Algorithm","summary":"The Raft paper","reason":"r"}]}"#
